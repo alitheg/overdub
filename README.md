@@ -64,7 +64,8 @@ keep Alexa and add a Home Assistant button and some entities.
   there, and fails if it cannot. A Magisk that uses `/data/adb/service.d`
   needs the path changed first.
 - `adb` on a development machine. A [release](#install-from-a-release) needs
-  nothing else.
+  nothing else to install on a rooted Dot. Rooting one also needs Python 3.9
+  or later and `fastboot`; see [Rooting a Dot](#rooting-a-dot).
 - To build it yourself: Go 1.25 or later, and an **Android NDK**
   (`brew install --cask android-ndk` on macOS, or
   [developer.android.com/ndk](https://developer.android.com/ndk)).
@@ -88,23 +89,115 @@ adb shell su -c 'cat /proc/bus/input/devices'   # names, handlers, key bitmaps
 adb shell su -c getevent                        # events, without grabbing
 ```
 
-## Coming from EchoMuse
+## Rooting a Dot
 
-EchoMuse's debloat step suppresses the Alexa stack this runs beside. Undo it
-first; nothing was uninstalled, so nothing needs reinstalling:
+`deploy/dot_root.py` takes a Dot from Amazon's stock Fire OS 6 to rooted Fire
+OS 5.5.5.4 with Magisk 17.3, which is what the requirements above ask for.
+With the Dot on USB:
 
 ```sh
-deploy/restore-amazon.sh   # then reboot
+deploy/dot_root.py                 # rooted Fire OS 5.5.5.4, about 15 minutes
+deploy/install.sh kitchen
 ```
 
-- It restores every hidden or disabled package, not only EchoMuse's. Things
-  you suppressed yourself come back too.
-- `com.amazon.device.software.ota` stays hidden. An OTA rewrites `boot.img`
-  and removes Magisk, root and overdub.
-- EchoMuse's payload moves to `/data/local/echomuse-disabled/`. Its
-  `service.d` debloat hook is deleted.
-- Skip this if the Dot never had EchoMuse.
-- docs/deployment.md says how the script decides what to restore.
+Both scripts, filmed from start to finish, the Dot beside the terminal:
+
+<a href="https://youtu.be/yB-SI6i5EZc"><img src="https://img.youtube.com/vi/yB-SI6i5EZc/maxresdefault.jpg" alt="Video: dot_root.py takes a stock Echo Dot to rooted Fire OS 5" width="49%"></a>
+<a href="https://youtu.be/hwVIYQENaBY"><img src="https://img.youtube.com/vi/hwVIYQENaBY/maxresdefault.jpg" alt="Video: dot_restore_stock.py returns a rooted Echo Dot to stock Fire OS 6" width="49%"></a>
+
+- It needs Python 3.9 or later and Android platform-tools (`adb` and
+  `fastboot`). Each script is one file, so it runs without a checkout, as
+  below.
+- A stock Dot shows nothing on USB. `dot_root.py` asks for the fastboot gesture
+  and waits for it.
+- The rooted Dot finishes in setup mode, with an orange ring and no Wi-Fi.
+  Home Assistant reaches it only over Wi-Fi, so add it in the Alexa app. That
+  is safe once rooted: `dot_root.py` hides the updater and blocks the update
+  hosts.
+- `deploy/dot_restore_stock.py <build>` returns a rooted Dot to stock Fire OS
+  6. It erases the whole Dot, Wi-Fi and the Alexa registration included. To
+  root it again, do not set it up in the Alexa app first: on Wi-Fi a stock
+  Dot can take an update to a build `dot_root.py` has not met.
+- [docs/rooting.md](docs/rooting.md) says why each step is there.
+
+### macOS
+
+Install platform-tools. The `PATH` line lasts for that terminal only.
+`/usr/bin/python3` offers to install the Command Line Tools on first run.
+
+```sh
+curl -LO https://dl.google.com/android/repository/platform-tools-latest-darwin.zip
+unzip -q platform-tools-latest-darwin.zip
+export PATH="$PWD/platform-tools:$PATH"
+```
+
+Root:
+
+```sh
+curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_root.py
+python3 dot_root.py
+```
+
+Restore stock:
+
+```sh
+curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_restore_stock.py
+python3 dot_restore_stock.py 8146   # or 4405, 5041, 6302, 8138, 8142
+```
+
+### Linux (Debian, Ubuntu)
+
+Install platform-tools:
+
+```sh
+sudo apt install adb fastboot curl
+```
+
+On other distributions, or when the script reports a tool too old, use
+Google's [platform-tools](https://developer.android.com/tools/releases/platform-tools).
+Run the scripts without `sudo`. When udev does not let the user open the Dot,
+the script prints the rules and the commands to add them.
+
+Root:
+
+```sh
+curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_root.py
+python3 dot_root.py
+```
+
+Restore stock:
+
+```sh
+curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_restore_stock.py
+python3 dot_restore_stock.py 8146   # or 4405, 5041, 6302, 8138, 8142
+```
+
+### Windows
+
+Install platform-tools and Python in PowerShell, then open a new terminal, so
+that `PATH` has them:
+
+```powershell
+winget install Google.PlatformTools
+winget install Python.Python.3.12
+```
+
+The bootrom step needs MediaTek's VCOM driver (`cdc-acm.inf`, class Ports),
+installed by hand. Windows supplies every other driver.
+
+Root:
+
+```powershell
+curl.exe -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_root.py
+py -3 dot_root.py
+```
+
+Restore stock:
+
+```powershell
+curl.exe -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_restore_stock.py
+py -3 dot_restore_stock.py 8146   # or 4405, 5041, 6302, 8138, 8142
+```
 
 ## Install from a release
 
@@ -608,6 +701,8 @@ defends against.
   clock
 - [Things that fail silently](docs/pitfalls.md): failures that report success
 - [Deployment](docs/deployment.md): installing and removing it
+- [Rooting](docs/rooting.md): `dot_root.py` and `dot_restore_stock.py`, step
+  by step
 
 ## Licence
 

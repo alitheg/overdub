@@ -6,7 +6,8 @@ covering whatever you are about to touch.
 ## Install and build
 
 - Nothing executes the shell scripts: gofmt, vet, the tests and shellcheck
-  only read them. CI asserts every tracked `.sh` is `100755`.
+  only read them. CI asserts every tracked `.sh`, and each Python script in
+  `deploy/`, is `100755`.
 - `install.sh` asks two questions separately: does `build.sh` **exist**, and is
   it executable. Merged, a source tree with stripped mode bits
   (`core.fileMode=false`, an unpacked archive) takes the tarball branch,
