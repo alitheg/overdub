@@ -55,16 +55,31 @@ stops when the Dot is rooted.
 ## Recording a run
 
 - `--verbose` prints each `adb` and `fastboot` command and its exit status
-  with the time, and each state the Dot reaches. The 2-second polls are not
+  with the time, and each state `dot_root.py` sees. The 2-second polls are not
   printed.
-- `--delay [SECONDS]` implies `--verbose` and counts down before each stage,
-  10 seconds by default. A recording then shows each state settled, and the
-  times match frames to commands.
+- `--delay [SECONDS]` implies `--verbose` and counts down before each stage:
+  10 seconds by default in `dot_root.py`, 5 in `dot_restore_stock.py`. A
+  recording then shows each state settled, and the times match frames to
+  commands.
 - The delay goes only between stages, because timing inside one matters. The
   fastbrick relies on an 8-second timeout, and amonet v1.1.0's bootrom step
   starts before `fastboot erase boot0` and has 60 seconds to find the port.
 - In verbose mode a stage prints a line when it starts and when it ends, with
   no running count.
+
+The ring during `dot_restore_stock.py 6302`, from a rooted Dot not set up:
+
+| ring | when |
+|---|---|
+| purple | rooted Fire OS 5, setup timed out (`anim_OOBE_start_error`) |
+| off, about 12 s | `adb reboot recovery` |
+| deep blue, about 10 s, a brighter segment turning in its last 3 | v1.1.0's TWRP starting, before adb answers |
+| a blink off, then a cyan arc turning, about 3 s | TWRP up: `adb wait-for-recovery` returns |
+| cyan, whole ring, steady | through all 15 steps |
+| off, about 8 s | the reboot into stock |
+| deep blue, about 50 s | stock Fire OS 6 booting |
+| cyan and blue, turning | Fire OS 6 starting Alexa |
+| orange | setup mode, about 90 s after the reboot |
 
 The ring during `dot_root.py` from stock 8138, in daylight, 14 min 49 s in all:
 
@@ -96,8 +111,8 @@ ring read white.
 ## The host
 
 - Python 3.9 or later, because stock macOS's `/usr/bin/python3` is 3.9.6. CI
-  byte-compiles the script under 3.9's parser and runs its `--help`.
-- The standard library only, so the script runs on stock macOS, Linux and
+  byte-compiles both scripts under 3.9's parser and runs their `--help`.
+- The standard library only, so the scripts run on stock macOS, Linux and
   Windows. adb and fastboot are the only external tools.
 - On a terminal, `ERROR:` lines are red and warnings yellow. `NO_COLOR`,
   `TERM=dumb`, a pipe or a file turns that off. On Windows only Windows
@@ -106,8 +121,8 @@ ring read white.
 - adb must be 1.0.36 (platform-tools r24) or newer: 1.0.32 answers
   `wait-for-recovery` with `unknown host service` and passes `shell -n` to the
   device. Ubuntu 22.04 and 24.04 ship 1.0.41. fastboot must accept `-S`, as
-  every release back to r19 does. The script checks `adb version` and
-  `fastboot --help` for `-S`. Old releases, run with no
+  every release back to r19 does. Both scripts check `adb version`, and
+  `dot_root.py` checks `fastboot --help` for `-S`. Old releases, run with no
   device, set these floors.
 - Downloads go to `$XDG_CACHE_HOME/overdub-root` (default
   `~/.cache/overdub-root`), or `%LOCALAPPDATA%\overdub-root` on Windows. Each
@@ -124,12 +139,12 @@ ring read white.
   from the zip. Nothing is installed.
 - `adb get-state` reports `unauthorized` on stderr, so the script reads both
   streams.
-- Without `ANDROID_SERIAL`, the script uses the one Dot on USB in
-  `adb devices -l`, and ignores network adb: a rooted Dot with tcp/5555 open
-  would make `adb get-state` answer `more than one device/emulator`. It picks
-  again on every poll, because each reboot drops the Dot off USB. With two
-  Dots on USB it stops and asks for `ANDROID_SERIAL`, which fastboot follows
-  too.
+- Without `ANDROID_SERIAL`, both scripts use the one Dot on USB in
+  `adb devices -l`, and ignore network adb: a rooted Dot with tcp/5555 open
+  would make `adb get-state` answer `more than one device/emulator`.
+  `dot_root.py` picks again on every poll, because each reboot drops the Dot
+  off USB. With two Dots on USB the scripts stop and ask for `ANDROID_SERIAL`,
+  which fastboot follows too.
 - An `ANDROID_SERIAL` of the form `host:port` is refused: TWRP starts no
   Wi-Fi, and fastboot and the bootrom are USB-only.
 - Windows 11's adb prints no `usb:` field, so there a line counts as USB unless
@@ -160,9 +175,9 @@ ring read white.
   keeps its old permissions: with the group added and the old server up,
   `adb devices` listed nothing. So after `adb kill-server`, `sg plugdev -c`
   runs a script with the group, without a new login.
-- The script refuses to run as root: the downloads would belong to root, and
+- Both scripts refuse to run as root: the downloads would belong to root, and
   the rules make `sudo` needless.
-- It checks at start that the process has `plugdev`, even for a desktop user
+- Both check at start that the process has `plugdev`, even for a desktop user
   covered by `uaccess`, so the check is one question. A user not in the group
   gets the rules and the commands to add them, starting with
   `groupadd -f plugdev` because Fedora and Arch have no such group. A user in
@@ -170,9 +185,9 @@ ring read white.
   line. The `sg` line repeats the command as run, interpreter, path and flags
   included, because `./dot_root.py` is wrong from another directory.
 - Without the rules adb lists the Dot as `no permissions`. When that lasts 5
-  seconds and nothing else listed is usable, the script stops and prints the
+  seconds and nothing else listed is usable, both scripts stop and print the
   same rules and commands. A shorter spell is udev still setting permissions.
-  A phone the user cannot open, beside a Dot that answers, does not stop it.
+  A phone the user cannot open, beside a Dot that answers, does not stop them.
 
 ## Unlock: amonet v2.0.0
 
@@ -221,10 +236,10 @@ ring read white.
   Those lines are dropped before anything is parsed.
 - adb answers 1.5 to 5 seconds before TWRP turns on MTP. The switch to
   `mtp,adb` drops the Dot off USB and brings it back as a new transport, and a
-  push under way fails with `failed to read copy response: EOF`. So the
-  script waits for `mtp` in `sys.usb.config`, empty until then, and tries each
-  push 3 times. A push that fails, that runs past 10 minutes, or whose md5
-  does not match counts as one try.
+  push under way fails with `failed to read copy response: EOF`. So both
+  scripts wait for `mtp` in `sys.usb.config`, empty until then, and
+  `dot_root.py` tries each push 3 times. A push that fails, that runs past 10
+  minutes, or whose md5 does not match counts as one try.
 - TWRP's `adb shell` exit status is unreliable. So each device-side step is a
   pushed script that ends by printing `root-step-ok`, which the script checks.
   The pushed scripts have `\n` line endings on every host.
@@ -276,3 +291,101 @@ ring read white.
 - An update would replace the boot image and remove root. On the first rooted
   run the script runs `pm hide com.amazon.device.software.ota`, then reads
   `hidden=true` back from `dumpsys package`.
+
+## Back to stock: dot_restore_stock.py
+
+`deploy/dot_restore_stock.py <build>` returns a Dot on amonet v1.1.0 to stock
+Fire OS 6, to test `dot_root.py` from a clean start. It follows `dot_root.py`'s
+host rules.
+
+- It starts from v1's TWRP 3.2.3, and reboots a booted Dot into it. Any other
+  TWRP stops it, because the table surgery reads v1's layout. It waits up to
+  30 seconds for TWRP's version and MTP, and a version that does not start
+  with a digit reads as not yet set.
+- It writes system, boot, TEE, LK, expdb, misc, both partition tables and
+  boot0, and formats cache and userdata. Other partitions keep what they
+  hold. It uses the one Dot on USB, or `ANDROID_SERIAL`, and never picks
+  among several.
+- TWRP must report `ro.product.device` as `biscuit`; amonet v1.1.0's TWRP
+  sets it in its `default.prop`.
+- It knows 6 builds: 4405 (6.5.5.6, the oldest with a `payload.bin`), 5041
+  (6.5.0.5), 6302 (6.4.6.6), and 8138, 8142 and 8146 (6.5.7.4.1). All ship the
+  same LK, `63cb91b-20221007_072309`. 6.5.5.5 (4310M) and Fire OS 5 ship a
+  block image (`system.new.dat`) instead, which the script cannot write.
+- The OTA comes from Amazon's CloudFront, found through the build's FTVDB page,
+  which FTVDB keys by the OTA's md5. The pin is the SHA-256 of a download that
+  matched that md5. Files go to `overdub-stock` beside `dot_root.py`'s cache,
+  and the script prints its path and size after the reboot.
+- The images come out of the OTA's `payload.bin`: a `CrAU` version 2 header,
+  a protobuf manifest, then `REPLACE`, `REPLACE_BZ` and `REPLACE_XZ`
+  operations. Each image is checked
+  against the manifest's SHA-256, a cached one on every run. Each operation is
+  read where it lies, so peak memory is one image plus one operation: about
+  1 GB, for the 768 MB system image.
+- A passed check prints ✅, or `ok` on a console that cannot encode it, such as
+  a legacy Windows code page, where printing it would raise
+  `UnicodeEncodeError`.
+
+### The partition table
+
+- amonet v1.1.0 renames the stock `boot_a` and `boot_b` to `boot_a_x` and
+  `boot_b_x`, and adds its own `boot_a` and `boot_b` as partitions 17 and 18,
+  cut from the end of userdata.
+- The stock table is built from the Dot's own: drop amonet's two, strip the
+  `_x`, and extend userdata to the last usable LBA. That leaves 16 partitions,
+  and the script stops on any other count.
+- The table must have a 92-byte header, 128 entries of 128 bytes, and both
+  CRCs right. A run cut during the primary's write leaves it damaged, with
+  stock and amonet entries mixed. The backup, written first, is then read
+  instead. If neither is intact, the script stops.
+- A table with no `_x` name is already stock, and is kept. So a run stopped
+  after the table went in can be run again, and redoes every step.
+- Every offset and size written comes from that table, not from constants. The
+  backup table goes to the last 33 sectors, before the primary.
+- After both, `sgdisk --verify` must report no problems, and the kernel rereads
+  the table. p17 and p18 must be gone from `/proc/partitions`, and userdata
+  must have its new size, before cache and userdata are formatted. Against the
+  old table, `mke2fs` would size userdata to amonet's cut.
+
+### The writes
+
+- system, boot, TEE and LK go to both slots, so the Dot boots stock whichever
+  slot it picks.
+- boot is padded with zeros to its 16 MiB partition, so no byte of amonet's
+  boot image survives, and the read-back covers the whole partition.
+- expdb holds amonet's payload and misc holds the slot metadata. Both are
+  zeroed.
+- Each write is `adb exec-in` into `dd`, then `sync`, then a page cache drop,
+  then an md5 read back from the same range. Without the drop, the read comes
+  from the cache and proves only that adb delivered the bytes. `dd` uses
+  4096-byte blocks where the offset and size allow, else 512.
+- `adb exec-in` returns before `dd` on the Dot finishes, and carries no exit
+  status. With Ubuntu 24.04's adb (34.0.4-debian), a 1.7 MB image had 77 to
+  151 KB written when adb returned, and all of it 2 seconds later. macOS's
+  platform-tools 37.0.0 returned about 1 second early, after 1.1 GB. Both
+  report 1.0.41. So `dd` writes its exit status to `/tmp/dd.status`, and the
+  script waits up to 2 minutes for it before the read-back.
+- The status goes to a `.part` file and is renamed into place, because the
+  shell creates the file before `echo` writes it, and a read in that gap is
+  empty. Only a number ends the wait: an adb error line reads as "not yet".
+  The previous file is removed first, and the removal checked, so the last
+  write's `0` cannot pass this one. A `dd` left running by a stopped run can
+  still write its status late; the md5 read-back then catches a short write.
+- A failed read-back names the md5 it read and the one it expected.
+- Nothing is written until every image is built and checked to fit its
+  partition. Then a 10-second countdown runs; Ctrl-C there stops the script
+  with nothing written. No input is needed to go on.
+- The preloader goes to `boot0` last, with `force_ro` lifted for the write and
+  set again after it.
+- Every failure after the countdown says "do not reboot": the Dot is part way
+  between amonet and stock, and TWRP is still up. Run the script again. It
+  redoes every write and reads each one back.
+- Each adb command has a time limit: 15 minutes for a write, at most 5 for
+  any other. A limit reached after the countdown is a failure like any other,
+  and says "do not reboot".
+- The first run on a Dot saves its table as `current-gpt-<serial>.bin` in the
+  build's folder. A later run on that Dot keeps that copy rather than saving
+  the stock table over it.
+- A restored Dot has no Wi-Fi until it is set up in the Alexa app. To root it
+  again, skip that setup: on Wi-Fi it can update to a build `dot_root.py` has
+  not met, or away from the build under test.
