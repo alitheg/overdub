@@ -58,7 +58,7 @@ can be worked on without a cable.
 - The poll does not re-assert while an apply is in progress. `ctl.restart` is
   asynchronous, so the old adbd is still up when `SetADBMode` returns. A
   re-assert then would restore the rule the close removed, and nothing removes
-  it again: the mode reads Off, a repeated Off is dropped, and `uninstall.sh`
+  it again: the mode reads Off, a repeated Off is dropped, and `uninstall.py`
   leaves this port alone.
 - So a close that reads Off after the settle deletes the rule a second time,
   through `DenyADB`. `AllowTCP` can wait up to 10 seconds on netd's lock, longer

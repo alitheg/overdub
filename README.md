@@ -60,12 +60,12 @@ keep Alexa and add a Home Assistant button and some entities.
   codename biscuit, FireOS 5.5.5.4, rooted, with Magisk. Everything here was
   measured on that model.
 - **Magisk 17.3**, or another that keeps `service.d` at
-  `/sbin/.core/img/.core/service.d`. `install.sh` writes the boot script only
+  `/sbin/.core/img/.core/service.d`. `install.py` writes the boot script only
   there, and fails if it cannot. A Magisk that uses `/data/adb/service.d`
   needs the path changed first.
-- `adb` on a development machine. A [release](#install-from-a-release) needs
-  nothing else to install on a rooted Dot. Rooting one also needs Python 3.9
-  or later and `fastboot`; see [Rooting a Dot](#rooting-a-dot).
+- `adb` and Python 3.9 or later on a macOS, Linux or Windows machine. A
+  [release](#install-from-a-release) needs nothing else to install on a rooted
+  Dot. Rooting one also needs `fastboot`; see [Rooting a Dot](#rooting-a-dot).
 - To build it yourself: Go 1.25 or later, and an **Android NDK**
   (`brew install --cask android-ndk` on macOS, or
   [developer.android.com/ndk](https://developer.android.com/ndk)).
@@ -97,7 +97,7 @@ With the Dot on USB:
 
 ```sh
 deploy/dot_root.py                 # rooted Fire OS 5.5.5.4, about 15 minutes
-deploy/install.sh kitchen
+deploy/install.py kitchen
 ```
 
 Both scripts, filmed from start to finish, the Dot beside the terminal:
@@ -206,8 +206,38 @@ with the scripts, the binary and `mapdump.jar`, already built:
 
 ```sh
 tar xf overdub-v1.0.0.tar.gz
-overdub-v1.0.0/deploy/install.sh kitchen
+overdub-v1.0.0/deploy/install.py kitchen
 ```
+
+On Windows, in PowerShell:
+
+```powershell
+tar xf overdub-v1.0.0.tar.gz
+py -3 overdub-v1.0.0\deploy\install.py kitchen
+```
+
+Each step prints one line, and ✅ means it was read back off the Dot:
+
+```
+Installing overdub as kitchen on <serial>.
+
+✅ build          prebuilt build/overdub, md5 63f1e442a0522439eea42570d30db241
+✅ root           su works
+✅ API key        kept the one already on the device
+✅ adb key        /home/you/.android/adbkey.pub; Network ADB will offer Secure
+✅ binary         md5 63f1e442a0522439eea42570d30db241
+✅ key directory  /data/local/bin is drwx------
+✅ mapdump.jar    md5 524a11ae43fffe6774f4ca2daf8249e2; Alexa commands on
+✅ boot script    service.d/overdub.sh
+✅ daemon         restarted as -name kitchen, pid 364 -> 2606
+
+Installed. Home Assistant must be able to reach this device on tcp/6053;
+README.md says how.
+```
+
+- ❗ marks something to act on, such as a reboot. ❌ marks a failure, and the
+  script stops there.
+- Where the terminal cannot show them, the marks print as `OK`, `!!` and `XX`.
 
 `SHA256SUMS` sits beside the tarball, and the build is attested:
 
@@ -230,8 +260,10 @@ stream. The version is the last line:
 overdub v1.0.0
 ```
 
-- The tarball carries no `build.sh`. `install.sh` builds when it finds
+- The tarball carries no `build.sh`. `install.py` builds when it finds
   `build.sh`, and otherwise installs `build/overdub` as it stands.
+- `build.sh` runs on macOS and Linux only. On Windows, `install.py` refuses a
+  source tree; install from a release.
 - Build it yourself to change anything, or to run only a binary you compiled.
 
 ## Build
@@ -260,16 +292,16 @@ R8_JAR=$SDK/build-tools/34.0.0/lib/d8.jar deploy/mapdump/build.sh
 ## Install
 
 ```sh
-deploy/install.sh kitchen                          # binary, boot script, key
+deploy/install.py kitchen                          # binary, boot script, key
 ```
 
-- `install.sh` installs `deploy/mapdump/mapdump.jar` if it is there, and says
+- `install.py` installs `deploy/mapdump/mapdump.jar` if it is there, and says
   which.
 - With more than one Dot on `adb`, set `ANDROID_SERIAL`:
 
 ```sh
 adb devices                                   # serials
-ANDROID_SERIAL=<serial> deploy/install.sh kitchen
+ANDROID_SERIAL=<serial> deploy/install.py kitchen
 ```
 
 What goes where:
@@ -286,11 +318,11 @@ The name:
 - **Required, and unique on your network.** Home Assistant prefixes every
   entity id with it. A second Dot under a name in use stops at a conflict menu.
 - Lowercase letters, digits, `-` and `_`; at most 63 characters; not starting
-  or ending with `-`. These are ESPHome's rules, and `install.sh` enforces them.
+  or ending with `-`. These are ESPHome's rules, and `install.py` enforces them.
 - Home Assistant identifies the device by its MAC, so a rename is accepted on
   the next connection. Entity ids keep the prefix they were created with.
 - A rename needs a reboot. The supervisor reads the boot script once at boot,
-  so it respawns the old name until then. `install.sh` prints
+  so it respawns the old name until then. `install.py` prints
   `REBOOT REQUIRED` when it sees this.
 - `<name>` below is the name **Home Assistant** knows the device by. If you
   rename the device there, the entity ids can follow, while the daemon log
@@ -318,7 +350,7 @@ Everything else is fixed in the binary: `event1`, keycodes 138 and 113,
 ## Uninstall
 
 ```sh
-deploy/uninstall.sh
+deploy/uninstall.py
 ```
 
 - It removes the boot script first. A reboot part way through leaves nothing
@@ -608,12 +640,12 @@ To register a Dot:
 | `Secure` | open only to a client holding the installed key |
 
 - Connect with `adb connect <address>:5555`. `ANDROID_SERIAL` then picks it for
-  `install.sh`.
+  `install.py`.
 - **`Off` and `Insecure` affect the network only.** Neither touches USB.
 - **`Secure` covers USB too.** `ro.adb.secure` applies to every transport, so
   a machine without the installed key gets `unauthorized` over USB, and the Dot
   has no screen to approve it.
-- `Secure` is offered only if `install.sh` found a public key
+- `Secure` is offered only if `install.py` found a public key
   (`~/.android/adbkey.pub` or `$ADBKEY`). That key becomes the *only* one adbd
   accepts.
 - A position change restarts adbd, which drops every adb session. Do not change
@@ -632,14 +664,16 @@ To register a Dot:
 
 - The API speaks only ESPHome's `Noise_NNpsk0_25519_ChaChaPoly_SHA256`. There
   is no plaintext mode.
-- `deploy/install.sh` generates the key when the Dot has none, and prints it
+- `deploy/install.py` generates the key when the Dot has none, and prints it
   once:
 
 ```
-Generated an API encryption key. Paste it into Home Assistant's
-ESPHome integration. The installer keeps no copy:
+✅ API key        generated, and verified on the device
 
-    kR2b...
+   Paste this key into Home Assistant's ESPHome integration.
+   The installer keeps no copy:
+
+       kR2b...
 ```
 
 - Keep it. A reinstall keeps an existing key, so Home Assistant stays paired.
@@ -664,13 +698,13 @@ adb shell 'su -c "logcat -d -v brief -s tts-Server tts-Playback"'   # playback
 - **The device requires encryption**: Home Assistant has no key for this Dot.
   Give it the one the installer printed.
 - **Nothing starts; the log ends
-  `no such file or directory (deploy/install.sh generates one)`**: there is no
-  key. Rerun `deploy/install.sh <name>`.
+  `no such file or directory (deploy/install.py generates one)`**: there is no
+  key. Rerun `deploy/install.py <name>`.
 - **Nothing starts; the log says the key `decodes to N bytes`**: the key is
   corrupt. A reinstall keeps it, so delete it first:
   `adb shell 'su -c "rm -f /data/local/bin/.overdub-noise-key"'`
 - **Nothing starts; the log says `NAME is unset`**: the boot script was
-  installed by hand. Rerun `deploy/install.sh <name>`.
+  installed by hand. Rerun `deploy/install.py <name>`.
 - **Mute stopped working**: the clone's name. Android picks a keylayout by
   device name, so it must be `mtk-kpd`.
 - **Every keycode looks wrong**: the build. `GOARCH=arm` is required.

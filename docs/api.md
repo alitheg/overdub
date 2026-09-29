@@ -636,6 +636,6 @@ responder.
 - Every frame is bounded before allocation by ESPHome's numbers: 128 bytes
   during the handshake, 32,768 after. Both reads happen before a peer proves
   anything.
-- `deploy/install.sh` generates the key only when the device has none, so a
+- `deploy/install.py` generates the key only when the device has none, so a
   reinstall does not lock Home Assistant out. Nothing generates a key on the
   device, so no unencrypted first connection exists.

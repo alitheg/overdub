@@ -2,14 +2,14 @@
 
 ## The name and the boot script
 
-- The device name is an argument to `install.sh`, not an edit to the tracked
+- The device name is an argument to `install.py`, not an edit to the tracked
   boot script. A name kept there is one `git checkout` from empty, and the next
   install pushes that over a working Dot. The running supervisor still holds the
   old arguments, so nothing fails until the next reboot.
 - A rename takes effect only after a reboot. The boot script runs once, at boot,
   and the shell loop that respawns the daemon holds its arguments. After a kill,
   the loop restarts the daemon under the old name.
-- `install.sh` reads the running daemon's `/proc/<pid>/cmdline` and prints
+- `install.py` reads the running daemon's `/proc/<pid>/cmdline` and prints
   `REBOOT REQUIRED` when the name does not match what it pushed.
 - The boot script is thin on purpose. Android has no user-level supervisor, and
   `init` would need an `.rc` entry in a ramdisk this Magisk cannot patch, so
@@ -59,15 +59,28 @@
   binary it had.
 - `adb push` does not carry the local mode, and `/data/local/tmp` is
   world-traversable, so both keys go through a `0700` directory. The API key's
-  is read back to confirm it is gone, and the trap removes it on any exit.
-  `uninstall.sh` removes it too, because a copy left there is the live key.
+  is read back to confirm it is gone, and `install.py` removes it on any exit
+  it can catch: an error, Ctrl-C, SIGTERM or SIGHUP, and Ctrl-Break on Windows.
+- The first of those signals turns all of them off before cleanup starts. A
+  closing terminal can send SIGHUP twice, and the second would otherwise kill
+  cleanup, or the `adb` removing the key. Windows delivers Ctrl-C to every
+  process on the console, so there cleanup also turns Ctrl-C off with
+  `SetConsoleCtrlHandler`, which the `adb` it starts inherits.
+- Each `adb` call in cleanup gives up after 30 seconds and prints the command
+  to finish by hand. With interrupts off, a Dot that stopped answering would
+  otherwise hold cleanup with no way out.
+- Closing the console window on Windows ends the process without cleanup:
+  Python gets no signal it can act on. A key left that way is never printed,
+  and the next install keeps it. Delete it and install again.
+- `uninstall.py` removes the staging directory too, because a copy left there
+  is the live key.
 - The adb public key is not a secret. Pushed straight to `tmp` it lands `0666`
   under an `o+x` directory, so another uid could swap in its own key between
   the push and the copy. The read-back would catch that only after the
   stranger's key was in place.
-- An empty or malformed adb key is refused before it is pushed. An empty key
-  passes every read-back, because an empty pattern matches the blank line the
-  device echoes. Installed, it would set `ro.adb.secure` against a key that
+- An empty or malformed adb key is refused before anything touches the Dot,
+  so a refusal cannot follow a freshly printed API key. An empty key would pass
+  every read-back, because every one of no lines is on the device. Installed, it would set `ro.adb.secure` against a key that
   authenticates nobody, which applies to USB too and locks the operator out.
 - An install cannot revoke. adbd authenticates against
   `/data/misc/adb/adb_keys`, which the daemon writes only on Secure, and
@@ -76,7 +89,7 @@
 
 ## Uninstall
 
-`uninstall.sh` works in this order:
+`uninstall.py` works in this order:
 
 1. Delete the boot script, alone. It is the only thing that starts the daemon
    at boot, so a reboot part way through leaves nothing running.
@@ -112,8 +125,8 @@
   staging files are not swept, and are removed without being verified.
 - The filter is an allowlist, not "anything echoed", because `adb` merges
   stderr into stdout and a linker warning from `su` would read as a leftover.
-- The ports are Go constants (`apiPort`, `sendspin.Port`), which shell cannot
-  read, so the script assigns its own variables. `main_test.go` compares them
+- The ports are Go constants (`apiPort`, `sendspin.Port`), which Python cannot
+  read, so the script assigns its own constants. `main_test.go` compares them
   against both constants. The read-back alone would show a moved port only as a
   rule that would not delete.
 
@@ -121,7 +134,7 @@
 
 - A release is a tarball. Building needs an NDK, a JDK and an Android SDK, so it
   carries the built binary and jar beside the scripts.
-- `install.sh` builds when `build.sh` is beside it, and installs `build/overdub`
+- `install.py` builds when `build.sh` is beside it, and installs `build/overdub`
   as it stands when it is not. The test is whether the file exists, not
   whether it can run; docs/pitfalls.md says why.
 - The tarball's binary cannot be rebuilt from what is beside it and compared.

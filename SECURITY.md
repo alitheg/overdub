@@ -39,7 +39,7 @@ because ESPHome has no peer allowlist for the daemon to offer.
 
 ## The install path
 
-`deploy/install.sh` reads every step back off the device rather than trusting an
+`deploy/install.py` reads every step back off the device rather than trusting an
 exit status, because nothing in that path reports its own failure: `cp` onto a
 running binary fails silently, and `adb shell` exits 0 whatever happened
 remotely. A way to make an install report success while placing something else

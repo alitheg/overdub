@@ -5,15 +5,15 @@ covering whatever you are about to touch.
 
 ## Install and build
 
-- Nothing executes the shell scripts: gofmt, vet, the tests and shellcheck
-  only read them. CI asserts every tracked `.sh`, and each Python script in
+- Nothing executes the scripts: gofmt, vet, the tests and shellcheck only
+  read them. CI asserts every tracked `.sh`, and each Python script in
   `deploy/`, is `100755`.
-- `install.sh` asks two questions separately: does `build.sh` **exist**, and is
+- `install.py` asks two questions separately: does `build.sh` **exist**, and is
   it executable. Merged, a source tree with stripped mode bits
   (`core.fileMode=false`, an unpacked archive) takes the tarball branch,
   installs a stale `build/overdub`, and prints `binary verified`.
 - `cp` onto the running binary fails with ETXTBSY, but toolbox `cp` exits 0,
-  `adb shell` exits 0 whatever happened remotely, and `set -e` catches nothing.
+  and `adb shell` exits 0 whatever happened remotely, so no exit status catches it.
   The binary goes in by rename, and its md5 is read back.
 - Compare by hash, never by size. Go's VCS stamp (commit, timestamp, dirty flag)
   is fixed-length, so different source gives the same size. `build.sh` pins
@@ -32,14 +32,21 @@ covering whatever you are about to touch.
 - A reproducible binary cannot say what it was built from. `git checkout`
   carries modified files across a branch change, so the build is not the
   branch, and every check downstream passes on the wrong binary.
-- The boot script is the only reason anything runs. `install.sh` copies it to
+- The boot script is the only reason anything runs. `install.py` copies it to
   Magisk 17.3's `/sbin/.core/img/.core/service.d/`. Where that directory does
   not exist, the `cp` fails, the `rm` beside it still runs, and the Dot does
   not start the daemon after its next reboot, with no log. The script's md5 is
   read back.
-- The restart check calls `adb` through a function. A pipeline reports only its
-  last command, so inline, a pulled cable reads as an empty pid, which is also
-  what "nothing supervised the daemon" prints.
+- The restart check tells a failed `adb` from an empty `ps`. Otherwise a pulled
+  cable reads as no pid, which is also what "nothing supervised the daemon"
+  prints.
+- `deploy/overdub.sh` is pushed with LF line ends whatever the checkout has. A
+  Windows checkout with `core.autocrlf` gives CRLF, and the Dot's shell would
+  then run the daemon as `-name kitchen\r`, which fails its name check.
+- `install.py` and `uninstall.py` hand `adb shell` one string, `su -c` and a
+  `shlex.quote`d command. Windows rebuilds the argument from a command line,
+  and a single string survives that unchanged. The two scripts ran this way on
+  macOS, Linux and Windows.
 
 ## Paths and uids
 
@@ -48,17 +55,17 @@ covering whatever you are about to touch.
   failure as a missing package, so `pm` runs as `/system/bin/sh
   /system/bin/pm`. `am` has a shebang and runs directly.
 - `/data/local/bin` must be `0700`, and `mkdir -p` keeps whatever mode an
-  earlier install left. `install.sh` chmods it and reads the mode back.
+  earlier install left. `install.py` chmods it and reads the mode back.
 - MAP's uid, 32051, cannot traverse `0700`. `app_process` does not report a
   permission error: it prints `ClassNotFoundException: MapDump` on
   `DexPathList[[]]` and then `Aborted`, which reads like a bad jar. So the jar
-  lives in `/data/local/map`, owned by 32051, mode `0755`, and `install.sh`
+  lives in `/data/local/map`, owned by 32051, mode `0755`, and `install.py`
   checks that uid 32051 can read it.
 - Uid 32051 cannot write to `/data/local/tmp` (`root:shell`). The failure is
   `EACCES` from inside dalvik, well after start. Nothing the jar does at
   runtime touches that directory.
 - `adb push` does not carry the local mode, and `/data/local/tmp` is `0771`, so
-  a `0600` key lands `0666` and any uid can reach it by name. `install.sh`
+  a `0600` key lands `0666` and any uid can reach it by name. `install.py`
   stages secrets through a `0700` directory of its own, then removes it. The
   binary and the boot script are not secret and use the shared directory.
 - There is no `/etc/resolv.conf`, so every Go lookup fails against `::1` with
@@ -184,7 +191,7 @@ A warm restart hides all of this.
 ## The device name
 
 - `-name` is required, has no default, and must be unique. The daemon checks it
-  as well as `install.sh`, because the binary can be run by hand.
+  as well as `install.py`, because the binary can be run by hand.
 - A fixed default would give every Dot the same name. Home Assistant prefixes
   every entity id with it, so adding a second Dot stops in a conflict menu.
 - A MAC-derived default invents an identity ESPHome deliberately lacks: ESPHome

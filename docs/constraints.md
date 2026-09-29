@@ -41,7 +41,7 @@
   `build.sh` stamps `$OVERDUB_VERSION` through `-ldflags -X main.version`; the
   release job sets it from the tag. A local build leaves it empty and prints
   `overdub (unversioned build)`.
-- The variable has a prefix because it is ambient. `install.sh` runs
+- The variable has a prefix because it is ambient. `install.py` runs
   `build.sh` in the caller's environment, and a bare `VERSION` from another
   project would stamp a binary nobody asked to stamp.
 

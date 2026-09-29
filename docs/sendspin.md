@@ -92,7 +92,7 @@ Binary size, measured on a linux/arm build of the daemon:
   place with `link`, which fails if the key exists. Two daemons racing on first
   boot (the supervisor respawns every 5 seconds) either win the link or read a
   complete file. A kill between write and link leaves the temporary file, so
-  `uninstall.sh` sweeps `<key>.new-*`.
+  `uninstall.py` sweeps `<key>.new-*`.
 
 ### The pairing token
 
@@ -664,7 +664,7 @@ listener closed, rule deleted and no longer re-asserted, sessions ended.
 
 ### Uninstalling takes the identity
 
-`uninstall.sh` removes the Sendspin key with the ESPHome one and reads both
+`uninstall.py` removes the Sendspin key with the ESPHome one and reads both
 back. A leftover key would not look like a failure, and the token from it would
 stay valid.
 
@@ -793,7 +793,7 @@ Each is refused, and each has a test that fails without it.
 - So every stop that can writes first: switch off, signal, stuck key, ESPHome
   listener returning, and `serve` returning an error. Each closes the listener
   and waits for the client to stop serving. `os.Exit` runs no deferred
-  function, and `install.sh` stops the old daemon with `SIGTERM`.
+  function, and `install.py` stops the old daemon with `SIGTERM`.
 - Each wait is bounded by `sendspinFlush` (2 seconds); a write still running
   is abandoned. That needs a write 50 times slower than any observed.
 - The keeper's wake is cleared before the keeper stops. A set arriving then

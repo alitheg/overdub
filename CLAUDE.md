@@ -12,8 +12,8 @@ was measured on hardware rather than reasoned out.
 
 ```sh
 ./build.sh                  # the only supported build; needs an NDK
-deploy/install.sh <name>    # build, push, install over adb
-deploy/uninstall.sh         # remove it again, and give the button back
+deploy/install.py <name>    # build, push, install over adb
+deploy/uninstall.py         # remove it again, and give the button back
 gofmt -l .                  # expected to be silent
 GOOS=linux GOARCH=arm GOARM=7 go vet ./...    # the target, not the runner
 
@@ -77,7 +77,7 @@ pages imported below apply to everything. Read the page for a subsystem
 - `docs/mdns.md`: the mDNS responder, or what a service advertises
 - `docs/device.md`: network adb, the microphone mute, a persisted setting
 - `docs/audio.md`: making a sound, or playing one
-- `docs/deployment.md`: `install.sh`, `uninstall.sh`, the boot script
+- `docs/deployment.md`: `install.py`, `uninstall.py`, the boot script
 - `docs/rooting.md`: `dot_root.py`, from stock Fire OS 6 to rooted Fire OS 5,
   and `dot_restore_stock.py` back
 - `docs/command.md`: the Alexa command path, the credential, MapDump

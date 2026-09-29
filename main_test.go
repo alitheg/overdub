@@ -47,18 +47,18 @@ func TestCheckName(t *testing.T) {
 }
 
 func TestUninstallDeletesTheRuleTheDaemonOpens(t *testing.T) {
-	script, err := os.ReadFile("deploy/uninstall.sh")
+	script, err := os.ReadFile("deploy/uninstall.py")
 	if err != nil {
 		t.Fatal(err)
 	}
-	shape := fmt.Sprintf("-i %s -p tcp --dport $port -j ACCEPT", wifiIface)
+	shape := fmt.Sprintf("-i %s -p tcp --dport {port} -j ACCEPT", wifiIface)
 	if !strings.Contains(string(script), shape) {
-		t.Errorf("deploy/uninstall.sh deletes no rule matching %q, and the daemon adds exactly that",
+		t.Errorf("deploy/uninstall.py deletes no rule matching %q, and the daemon adds exactly that",
 			shape)
 	}
 	assigned := map[string]string{}
 	for _, line := range strings.Split(string(script), "\n") {
-		if name, value, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+		if name, value, ok := strings.Cut(strings.TrimSpace(line), " = "); ok {
 			assigned[name] = value
 		}
 	}
@@ -67,8 +67,8 @@ func TestUninstallDeletesTheRuleTheDaemonOpens(t *testing.T) {
 		if !strings.HasPrefix(strings.TrimSpace(line), "for port in ") {
 			continue
 		}
-		for _, field := range strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "for port in ")) {
-			name := strings.Trim(field, `"$;`)
+		for _, field := range strings.Split(strings.TrimPrefix(strings.TrimSpace(line), "for port in "), ",") {
+			name := strings.Trim(field, " ():")
 			if value, ok := assigned[name]; ok {
 				looped[value] = true
 			}
@@ -77,13 +77,13 @@ func TestUninstallDeletesTheRuleTheDaemonOpens(t *testing.T) {
 	}
 	for _, port := range []int{apiPort, sendspin.Port} {
 		if !looped[strconv.Itoa(port)] {
-			t.Errorf("deploy/uninstall.sh deletes no rule for tcp/%d, which the daemon opens", port)
+			t.Errorf("deploy/uninstall.py deletes no rule for tcp/%d, which the daemon opens", port)
 		}
 	}
 }
 
 func TestTheScriptsUseTheKeyPathTheDaemonReads(t *testing.T) {
-	for _, name := range []string{"deploy/install.sh", "deploy/uninstall.sh"} {
+	for _, name := range []string{"deploy/install.py", "deploy/uninstall.py"} {
 		script, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
@@ -91,9 +91,9 @@ func TestTheScriptsUseTheKeyPathTheDaemonReads(t *testing.T) {
 		named, acts := false, false
 		for _, line := range strings.Split(string(script), "\n") {
 			trimmed := strings.TrimSpace(line)
-			inert := strings.HasPrefix(trimmed, "KEY=") ||
+			inert := strings.HasPrefix(trimmed, "KEY = ") ||
 				strings.HasPrefix(trimmed, "#") ||
-				strings.HasPrefix(trimmed, "echo ")
+				strings.Contains(trimmed, "adb shell '")
 			if strings.Contains(line, noiseKeyPath) {
 				named = true
 				if !inert {
@@ -101,7 +101,7 @@ func TestTheScriptsUseTheKeyPathTheDaemonReads(t *testing.T) {
 				}
 				continue
 			}
-			if !inert && strings.Contains(line, "$KEY") {
+			if !inert && strings.Contains(line, "{KEY}") {
 				acts = true
 			}
 		}
@@ -377,19 +377,19 @@ func TestTheModelWeSendCarriesNoDotOfItsOwn(t *testing.T) {
 }
 
 func TestUninstallClearsEveryPropertyThisTreeKeeps(t *testing.T) {
-	script, err := os.ReadFile("deploy/uninstall.sh")
+	script, err := os.ReadFile("deploy/uninstall.py")
 	if err != nil {
 		t.Fatal(err)
 	}
 	const glob = "/data/property/persist.overdub.*"
 	if !strings.Contains(string(script), glob) {
-		t.Fatalf("deploy/uninstall.sh does not enumerate %s, so it clears the names"+
+		t.Fatalf("deploy/uninstall.py does not enumerate %s, so it clears the names"+
 			" somebody remembered rather than the ones this dot has: three properties"+
 			" from measuring the name limit sat in flash for weeks that way", glob)
 	}
 	stem := strings.TrimSuffix(strings.TrimPrefix(glob, "/data/property/"), "*")
 	if stem != device.Prefix {
-		t.Errorf("deploy/uninstall.sh clears %s and this daemon writes %s*, so every"+
+		t.Errorf("deploy/uninstall.py clears %s and this daemon writes %s*, so every"+
 			" property it keeps would survive an uninstall and a reinstall would start"+
 			" with settings nobody chose", glob, device.Prefix)
 	}

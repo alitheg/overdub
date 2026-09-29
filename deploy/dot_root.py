@@ -735,7 +735,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             version = rshell(command="getprop ro.build.version.name")
             selinux = rshell(command="getenforce")
             warn(f"The Dot is rooted: {version}, SELinux {selinux}, {UPDATER} hidden.")
-            warn("Install overdub with deploy/install.sh <name>.")
+            warn("Install overdub with deploy/install.py <name>.")
             cache_note()
             return
         if current in done or current in {"none", "stock-booted", "booted", "starting"}:

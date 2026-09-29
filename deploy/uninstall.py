@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""Remove overdub from a rooted Echo Dot (2nd Generation), over adb, and give the
+action button back to Alexa. Set ANDROID_SERIAL to pick one of several attached
+or connected devices. It needs Python 3.9 or later and adb. docs/deployment.md
+says why each step is in the order it is.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import textwrap
+import time
+from typing import NoReturn, TextIO
+
+ADBKEY = "/data/local/bin/adb_keys"
+ADBKEYS = "/data/misc/adb/adb_keys"
+API_PORT = 6053
+BIN = "/data/local/bin/overdub"
+BOOT = "/sbin/.core/img/.core/service.d/overdub.sh"
+KEY = "/data/local/bin/.overdub-noise-key"
+LABEL = 14
+INDENT = " " * (LABEL + 4)
+LOG = "/data/local/tmp/overdub.log"
+MAP = "/data/local/map"
+SENDFLAG = "persist.overdub.sendspin"
+SENDKEY = "/data/local/bin/.overdub-sendspin-key"
+SENDSPIN_PORT = 8928
+STAGE = "/data/local/tmp/overdub-install"
+STATE = argparse.Namespace(pending=False)
+SWEPT = [BOOT, BIN, BIN + ".new", KEY, SENDKEY, STAGE, MAP, LOG]
+
+
+def adb(*args: str) -> tuple[int, str]:
+    result = subprocess.run(
+        ["adb", *args],
+        check=False,
+        errors="replace",
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return result.returncode, result.stdout.replace("\r", "")
+
+
+def fail(label: str, *lines: str) -> NoReturn:
+    show(*lines, label=label, sign=mark("fail"), stream=sys.stderr)
+    sys.exit(1)
+
+
+def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.parse_args()
+    if not shutil.which("adb"):
+        print(
+            "uninstall.py: adb not found: install Android platform-tools",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    adb("start-server")
+    code, out = adb("get-serialno")
+    lines = [line for line in out.strip().split("\n") if line]
+    if code != 0 or len(lines) != 1 or lines[0] == "unknown":
+        fail(
+            "adb",
+            "No single device to uninstall from:",
+            *lines,
+            "Set ANDROID_SERIAL to pick one.",
+        )
+    print(f"Removing overdub from {lines[0]}.")
+    print()
+    if not re.search(r"uid=0\b", su("id")[1]):
+        fail("root", "su -c id did not report uid=0.")
+    ok("root", "su works")
+
+    su(f"rm -f {BOOT}")
+    su(
+        f"rm -f {BIN} {BIN}.new {KEY} {SENDKEY} {SENDKEY}.new-* {ADBKEY}\n"
+        f"rm -rf {STAGE} {MAP}\n"
+        "rm -f /data/local/tmp/overdub /data/local/tmp/s.sh"
+    )
+
+    pid = overdub_pid()
+    if pid is None:
+        fail("daemon", "adb went away before the kill.")
+    if pid:
+        pending(detail=f"stopping pid {pid}", label="daemon")
+        su(f"kill {pid}")
+        time.sleep(8)
+
+    su(f"rm -f {LOG}\nrmdir /data/local/bin 2>/dev/null\ntrue")
+    pending(detail="waiting for the supervisor's next cycle", label="files")
+    time.sleep(6)
+
+    code, answer = su(
+        f"for path in {' '.join(SWEPT)} {SENDKEY}.new-*; do\n"
+        '  [ -e "$path" ] && echo "$path"\n'
+        "done\n"
+        "echo swept"
+    )
+    answer = answer.split("\n")
+    if "swept" not in answer:
+        fail(
+            "files",
+            "Could not read the device back, so nothing here is confirmed removed."
+            " Run this again with the Dot connected.",
+        )
+    left = [
+        line for line in answer if line in SWEPT or line.startswith(SENDKEY + ".new-")
+    ]
+
+    for path in left:
+        if path == LOG:
+            show(
+                f"STILL SUPERVISED: {LOG} came back after it was removed, so the"
+                " service.d loop is still running. ps shows it as bare sh rather than"
+                " the script it runs, so a reboot is what ends it.",
+                label="supervisor",
+                sign=mark("fail"),
+                stream=sys.stderr,
+            )
+        else:
+            show(
+                f"STILL PRESENT: {path}",
+                label="files",
+                sign=mark("fail"),
+                stream=sys.stderr,
+            )
+    if not left:
+        ok("files", "binary, keys, boot script and mapdump.jar removed")
+
+    still = overdub_pid()
+    if still is None:
+        fail("daemon", "adb went away during the check.")
+    if still:
+        if left:
+            reason = (
+                "Things above are still on the device, so it will start again, at the"
+                " next respawn or the next boot. Fix those and run this again."
+            )
+        else:
+            reason = (
+                "The kill did not take, but nothing starts it again: the boot script"
+                " and the binary are both gone, so a reboot is the end of it."
+            )
+        show(
+            f"STILL RUNNING as pid {still}. {reason}",
+            label="daemon",
+            sign=mark("fail"),
+            stream=sys.stderr,
+        )
+    else:
+        ok("daemon", "stopped" if pid else "was not running")
+    if left or still:
+        print(file=sys.stderr)
+        print("Uninstall incomplete.", file=sys.stderr)
+        sys.exit(1)
+
+    closed = []
+    for port in (API_PORT, SENDSPIN_PORT):
+        rule = f"-i wlan0 -p tcp --dport {port} -j ACCEPT"
+        su(
+            f"while iptables -w -C INPUT {rule} 2>/dev/null; do\n"
+            f"  iptables -w -D INPUT {rule} || break\n"
+            "done"
+        )
+        answer = su(f"iptables -L INPUT -n | grep {port}; echo checked")[1].split("\n")
+        found = [line for line in answer if f"dpt:{port}" in line]
+        if "checked" not in answer:
+            found = ["could not read the chain back"]
+        if found:
+            warn(
+                "firewall",
+                f"The tcp/{port} rule is still in the INPUT chain:",
+                *[f"  {line}" for line in found],
+                "Nothing listens behind it now. It lives in the chain rather than on"
+                " disk, so a reboot clears it.",
+            )
+        else:
+            closed.append(f"tcp/{port}")
+    if closed:
+        ok("firewall", " and ".join(closed) + " closed")
+
+    su(
+        "for f in /data/property/persist.overdub.*; do\n"
+        '  [ -e "$f" ] || continue\n'
+        '  setprop "${f##*/}" ""\n'
+        '  rm -f "$f"\n'
+        "done"
+    )
+    answer = su(f"getprop {SENDFLAG}; echo checked")[1].split("\n")
+    value = [line for line in answer if line not in {"checked", ""}]
+    if "checked" not in answer:
+        warn("settings", f"Could not read {SENDFLAG} back; it may still be set.")
+    elif value:
+        warn(
+            "settings",
+            f"{SENDFLAG} is still set to {value[0]}. It only decides whether a"
+            " future install starts Sendspin switched on.",
+        )
+    else:
+        ok("settings", "persist.overdub.* cleared")
+
+    for paragraph in (
+        (
+            "Home Assistant can no longer talk to this device: the API key it was"
+            " configured with is gone. Installing again generates a NEW key and"
+            " prints it once. Give that to the ESPHome integration, which asks for"
+            " it when the handshake fails."
+        ),
+        (
+            "Reboot to finish. Whatever Network ADB was last set to is still in"
+            " force: it lives in the property store and the firewall chain rather"
+            " than on disk. If it was Insecure, tcp/5555 is an unauthenticated root"
+            " shell until you reboot."
+        ),
+        (
+            f"One file is left on purpose: the public key at {ADBKEYS}. adbd"
+            " consults it only while ro.adb.secure is 1, and nothing sets that once"
+            " this is gone, so it grants nothing. Removing it would take away the"
+            " half that grants access and leave the half that denies it."
+        ),
+    ):
+        print()
+        print(textwrap.fill(paragraph, 79))
+    print()
+    print("Overdub uninstalled. The action button belongs to Alexa again.")
+
+
+def mark(kind: str) -> str:
+    marks = {"fail": "❌", "ok": "✅", "warn": "❗"}
+    try:
+        marks[kind].encode(sys.stdout.encoding or "ascii")
+        return marks[kind]
+    except UnicodeEncodeError:
+        return {"fail": "XX", "ok": "OK", "warn": "!!"}[kind]
+
+
+def ok(label: str, *lines: str) -> None:
+    show(*lines, label=label, sign=mark("ok"))
+
+
+def overdub_pid() -> str | None:
+    code, listing = su("ps")
+    if code != 0:
+        return None
+    for line in listing.split("\n"):
+        fields = line.split()
+        if len(fields) > 1 and fields[-1].endswith("bin/overdub"):
+            return fields[1]
+    return ""
+
+
+def pending(*, detail: str, label: str) -> None:
+    if STATE.pending:
+        sys.stdout.write("\r" + " " * 79 + "\r")
+    if sys.stdout.isatty():
+        print(f"   {label:<{LABEL}} {detail} ...", end="", flush=True)
+        STATE.pending = True
+
+
+def show(*lines: str, label: str, sign: str, stream: TextIO = sys.stdout) -> None:
+    if STATE.pending:
+        sys.stdout.write("\r" + " " * 79 + "\r")
+        sys.stdout.flush()
+        STATE.pending = False
+    first = f"{sign} {label:<{LABEL}} "
+    for line in lines or [""]:
+        if line.startswith(" "):
+            print(INDENT + line, file=stream, flush=True)
+        else:
+            print(
+                textwrap.fill(line, 79, initial_indent=first, subsequent_indent=INDENT),
+                file=stream,
+                flush=True,
+            )
+        first = INDENT
+
+
+def su(command: str) -> tuple[int, str]:
+    return adb("shell", "su -c " + shlex.quote(command))
+
+
+def warn(label: str, *lines: str) -> None:
+    show(*lines, label=label, sign=mark("warn"))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        sys.exit(130)

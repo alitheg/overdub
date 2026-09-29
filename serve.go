@@ -392,7 +392,7 @@ func usePlayback(server *esphome.Server) {
 func loadPSK(path string) ([]byte, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("%w (deploy/install.sh generates one)", err)
+		return nil, fmt.Errorf("%w (deploy/install.py generates one)", err)
 	}
 	psk, err := esphome.DecodeNoisePSK(string(raw))
 	if err != nil {
