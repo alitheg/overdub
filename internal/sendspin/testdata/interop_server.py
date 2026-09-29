@@ -14,6 +14,7 @@ import asyncio
 import logging
 import struct
 import sys
+from typing import TYPE_CHECKING
 
 from aiosendspin.audio.format import AudioFormat
 from aiosendspin.models.core import ClientTimeMessage
@@ -23,26 +24,15 @@ from aiosendspin.server.connection import SendspinConnection
 from aiosendspin.server.server import SendspinServer
 from flac_vector import RATE, pattern
 
-SETTLE_TIMEOUT_S = 15.0
-POLL_S = 0.1
-WANTED_EXCHANGES = 3
-CHUNK_FRAMES = RATE // 50
+if TYPE_CHECKING:
+    from aiosendspin.server.client import SendspinClient
+
 BUFFER_US = 2_000_000
-FORMAT = AudioFormat(sample_rate=RATE, bit_depth=16, channels=2)
-
-
-def count_time_exchanges() -> list[int]:
-    """Count the client/time messages the reference server parses and answers."""
-    seen = [0]
-    handle = SendspinConnection._handle_message
-
-    async def counting(self, message, timestamp_us):  # noqa: ANN001, ANN202
-        if isinstance(message, ClientTimeMessage):
-            seen[0] += 1
-        return await handle(self, message, timestamp_us)
-
-    SendspinConnection._handle_message = counting
-    return seen
+CHUNK_FRAMES = RATE // 50
+FORMAT = AudioFormat(bit_depth=16, channels=2, sample_rate=RATE)
+POLL_S = 0.1
+SETTLE_TIMEOUT_S = 15.0
+WANTED_EXCHANGES = 3
 
 
 class _Complaints(logging.Handler):
@@ -56,7 +46,31 @@ class _Complaints(logging.Handler):
         self.lines.append(record.getMessage())
 
 
-async def play(client, seconds: float) -> None:
+def count_time_exchanges() -> list[int]:
+    seen = [0]
+    handle = SendspinConnection._handle_message  # ruff: ignore[private-member-access]
+
+    async def counting(self, message, timestamp_us):  # ruff: ignore[missing-type-function-argument, missing-return-type-private-function]
+        if isinstance(message, ClientTimeMessage):
+            seen[0] += 1
+        return await handle(self, message, timestamp_us)
+
+    SendspinConnection._handle_message = counting  # ruff: ignore[private-member-access]
+    return seen
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--url", required=True)
+    ap.add_argument("--client-id", required=True)
+    ap.add_argument("--play-seconds", default=0, type=float)
+    args = ap.parse_args()
+    return asyncio.run(
+        run(client_id=args.client_id, play_seconds=args.play_seconds, url=args.url)
+    )
+
+
+async def play(*, client: SendspinClient, seconds: float) -> None:
     samples = pattern(int(RATE * seconds))
     stream = client.group.start_stream()
     for at in range(0, len(samples), 2 * CHUNK_FRAMES):
@@ -69,7 +83,9 @@ async def play(client, seconds: float) -> None:
     await client.group.stop()
 
 
-async def run(url: str, client_id: str, play_seconds: float) -> int:
+async def run(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    *, client_id: str, play_seconds: float, url: str
+) -> int:
     loop = asyncio.get_running_loop()
     exchanges = count_time_exchanges()
     complaints = _Complaints()
@@ -118,24 +134,27 @@ async def run(url: str, client_id: str, play_seconds: float) -> int:
         if client.client_id != client_id:
             failures.append(f"client_id came back as {client.client_id}")
         if "player@v1" not in set(client.negotiated_role_ids):
-            failures.append(
-                f"player@v1 missing from negotiated roles {sorted(client.negotiated_role_ids)}"
-            )
+            roles = sorted(client.negotiated_role_ids)
+            failures.append(f"player@v1 missing from negotiated roles {roles}")
         if exchanges[0] < WANTED_EXCHANGES:
             failures.append(
-                f"the client asked the time {exchanges[0]} times in {SETTLE_TIMEOUT_S}s,"
-                f" want {WANTED_EXCHANGES}"
+                f"the client asked the time {exchanges[0]} times in"
+                f" {SETTLE_TIMEOUT_S}s, want {WANTED_EXCHANGES}"
             )
         if play_seconds:
             if not client.available:
                 failures.append("a client with a player never reported available")
             else:
-                await play(client, play_seconds)
+                await play(client=client, seconds=play_seconds)
         elif client.available:
-            failures.append("the client reported available while it has no clock or audio")
-        for line in complaints.lines:
-            if "non-compliant" in line or "Malformed" in line:
-                failures.append(f"server complained: {line}")
+            failures.append(
+                "the client reported available while it has no clock or audio"
+            )
+        failures.extend(
+            f"server complained: {line}"
+            for line in complaints.lines
+            if "non-compliant" in line or "Malformed" in line
+        )
     finally:
         await server.close()
 
@@ -145,15 +164,6 @@ async def run(url: str, client_id: str, play_seconds: float) -> int:
         return 1
     print("\nINTEROP OK")
     return 0
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--url", required=True)
-    ap.add_argument("--client-id", required=True)
-    ap.add_argument("--play-seconds", type=float, default=0)
-    args = ap.parse_args()
-    return asyncio.run(run(args.url, args.client_id, args.play_seconds))
 
 
 if __name__ == "__main__":

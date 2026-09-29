@@ -28,6 +28,7 @@ go test -race ./internal/alexa/ ./internal/audio/ ./internal/esphome/ \
   ./internal/untrustedlog/
 
 git ls-files -z '*.sh' | xargs -0 shellcheck -S style   # as CI runs it
+pre-commit run --all-files    # CodeSorter and ruff, as CI runs them
 deploy/check-identifiers.sh   # Amazon identifiers still look like ones
 
 # against the reference server; needs uv, and CI runs it in a job of its own

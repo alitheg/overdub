@@ -138,8 +138,8 @@
   tag, so `push` (main and `v*` tags) cuts a release and tests the merge onto
   main. Unfiltered, every branch with an open PR ran the suite twice.
 - The release is a job in `ci.yml`, not a workflow of its own, so it can say
-  `needs: [build, dot-scripts]`. `needs:` does not reach across workflows. A
-  tag on a red commit produces nothing.
+  `needs: [build, dot-scripts, pre-commit]`. `needs:` does not reach across
+  workflows. A tag on a red commit produces nothing.
 - The attestation names `.github/workflows/ci.yml` as the signer, which is what
   `--signer-workflow` wants. Moving the job would change what old and new
   releases attest to.

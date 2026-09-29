@@ -1,0 +1,34 @@
+preview = true
+target-version = "py39"
+
+[lint]
+ignore = [
+    # the code carries no explanatory comments; see CLAUDE.md
+    "D1",
+    # the docstring rules conflict pairwise; keep the other of each pair
+    "incorrect-blank-line-before-class",
+    "multi-line-summary-second-line",
+    # LICENSE.txt carries the copyright; no per-file headers
+    "missing-copyright-notice",
+    # formatter-incompatible per ruff's own guidance
+    "missing-trailing-comma",
+    "single-line-implicit-string-concatenation",
+    # the scripts are command-line tools, and print is their output
+    "print",
+]
+select = ["ALL"]
+
+[lint.per-file-ignores]
+"deploy/*.py" = [
+    # every URL is a fixed https one
+    "suspicious-url-open-usage",
+    # the module docstring is the --help text
+    "missing-blank-line-after-summary",
+    # driving adb and fastboot with fixed argument lists is the scripts' purpose
+    "subprocess-without-shell-equals-true",
+    "suspicious-subprocess-import",
+]
+"internal/sendspin/testdata/*" = [
+    # tools run by path, not a package
+    "implicit-namespace-package",
+]

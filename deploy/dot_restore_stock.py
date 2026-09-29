@@ -11,8 +11,11 @@ It needs Python 3.9 or later, and adb from Android platform-tools.
 docs/rooting.md says why each step is there.
 """
 
+from __future__ import annotations
+
 import argparse
 import bz2
+import contextlib
 import hashlib
 import http.client
 import lzma
@@ -30,7 +33,10 @@ import time
 import urllib.request
 import zipfile
 import zlib
-from typing import NamedTuple
+from typing import TYPE_CHECKING, BinaryIO, NamedTuple, NoReturn, TextIO
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 ARGS = argparse.Namespace(delay=0, shown=None, verbose=False)
 AS_ROOT = (
@@ -39,13 +45,18 @@ AS_ROOT = (
 )
 
 
+BLOCK_SIZE_FIELD = 3
 DISK = "/dev/block/mmcblk0"
+DOT_TMP = pathlib.PurePosixPath("/tmp")  # ruff: ignore[hardcoded-temp-file]
+DST_EXTENTS_FIELD = 6
 FLUSH = "sync && echo 3 > /proc/sys/vm/drop_caches && echo flushed"
 FTVDB = "https://ftvdb.com/echo/firmware/com.amazon.biscuit.android.os/"
+GPT_HEADER_SIZE = 92
 IMAGES = ("preloader", "lk", "tee", "boot", "system")
+MEGA = 1e6
 MORE_THAN_ONE = (
-    "more than one Dot on USB: set ANDROID_SERIAL to one's serial"
-    " (adb devices lists them)"
+    "more than one Dot on USB: set ANDROID_SERIAL to one's serial (adb"
+    " devices lists them)"
 )
 NEW_GROUP = """this shell predates its user joining plugdev. Log in again, or run:
 
@@ -68,13 +79,26 @@ adb kill-server
 
 Then run it again with the new group, which a new login also has:
 
-"""
-STATUS = "/tmp/dd.status"
+"""  # ruff: ignore[line-too-long]
+OPERATIONS_FIELD = 8
+PARTITIONS_FIELD = 13
+PAYLOAD_VERSION = 2
+REPLACE = 0
+REPLACE_BZ = 1
+REPLACE_XZ = 8
+STATUS = DOT_TMP / "dd.status"
+STEPS = 15
+STOCK_PARTITIONS = 16
 UNMOUNT = (
     'for m in $(grep "^/dev/block/mmcblk0" /proc/mounts | cut -d" " -f2); '
     'do umount "$m"; done'
 )
 USER_SERIAL = os.environ.get("ANDROID_SERIAL")
+VARINT_MORE = 0x80
+WIRE_FIXED32 = 5
+WIRE_FIXED64 = 1
+WIRE_LEN = 2
+WIRE_VARINT = 0
 
 
 WRITES = (
@@ -153,7 +177,7 @@ BUILDS = {
 
 
 class Progress:
-    def __init__(self, steps):
+    def __init__(self, steps: int) -> None:
         self.step = 0
         self.steps = steps
         self.t0 = time.monotonic()
@@ -162,30 +186,30 @@ class Progress:
         self.stopped = threading.Event()
         self.ticker = None
 
-    def begin(self, label, estimate):
+    def begin(self, *, estimate: str, label: str) -> None:
         self.step += 1
         about = f"(~{estimate})"
         self.line = f"[{self.step:2d}/{self.steps}] {label:<44} {about:<10} ... "
         delay(f"[{self.step:2d}/{self.steps}] {label}")
         self.ts = time.monotonic()
         if ARGS.verbose:
-            show(self.line.rstrip())
+            show(text=self.line.rstrip())
             return
-        show(self.line, end="", flush=True)
+        show(end="", flush=True, text=self.line)
         self.stopped.clear()
         self.ticker = threading.Thread(daemon=True, target=self.tick)
         self.ticker.start()
 
-    def end(self):
+    def end(self) -> None:
         back = "\r" if self.halt() else ""
-        show(f"{back}{self.line}done in {self.seconds()}, {self.minutes()}m total")
+        show(text=f"{back}{self.line}done in {self.seconds()}, {self.minutes()}m total")
 
-    def fail(self, message):
+    def fail(self, message: str) -> NoReturn:
         if self.halt():
             print()
-        die(message)
+        _die(message=message)
 
-    def halt(self):
+    def halt(self) -> bool:
         if not self.ticker:
             return False
         self.stopped.set()
@@ -193,18 +217,30 @@ class Progress:
         self.ticker = None
         return True
 
-    def minutes(self):
+    def minutes(self) -> int:
         return int((time.monotonic() - self.t0) // 60)
 
-    def seconds(self):
+    def seconds(self) -> str:
         return f"{int(time.monotonic() - self.ts):3d}s"
 
-    def tick(self):
+    def tick(self) -> None:
         while not self.stopped.wait(1):
-            show(f"\r{self.line}{self.seconds()}", end="", flush=True)
+            show(end="", flush=True, text=f"\r{self.line}{self.seconds()}")
 
 
-def cache_dir():
+def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
+    if ARGS.shown not in {None, "error"}:
+        print()
+    ARGS.shown = "error"
+    text = prefix + message
+    if "\n" not in text:
+        text = textwrap.fill(text, 79)
+    if prefix and color(sys.stderr):
+        text = f"\033[31m{text}\033[0m"
+    raise SystemExit(text)
+
+
+def cache_dir() -> pathlib.Path:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or pathlib.Path.home()
     else:
@@ -215,55 +251,55 @@ def cache_dir():
 CACHE = cache_dir()
 
 
-def cache_note():
+def cache_note() -> None:
     if CACHE.is_dir():
         size = sum(f.stat().st_size for f in CACHE.rglob("*") if f.is_file())
         path, home = str(CACHE), str(pathlib.Path.home())
         if os.name != "nt" and path.startswith(home + os.sep):
             path = "~" + path[len(home) :]
         show(
-            f"{path} holds {size // 1000000} MB of downloads and images for the"
+            text=f"{path} holds {size // 1000000} MB of downloads and images for the"
             " next run. It is safe to delete."
         )
 
 
-def check_adb():
-    words = run(["adb", "version"], timeout=30).stdout.split()
+def check_adb() -> None:
+    words = run(args=["adb", "version"], timeout=30).stdout.split()
     version = (
         words[4] if words[:4] == ["Android", "Debug", "Bridge", "version"] else "?"
     )
     parts = version.split(".")
     if not all(part.isdigit() for part in parts) or tuple(map(int, parts)) < (1, 0, 36):
-        die(
-            f"adb reports version {version}; this needs 1.0.36 (platform-tools r24)"
-            " or newer"
+        _die(
+            message=f"adb reports version {version}; this needs 1.0.36"
+            " (platform-tools r24) or newer"
         )
 
 
-def check_user():
+def check_user() -> None:
     if os.name != "nt" and os.geteuid() == 0:
-        die(AS_ROOT)
+        _die(message=AS_ROOT)
     if not sys.platform.startswith("linux"):
         return
-    import grp
-    import pwd
+    import grp  # ruff: ignore[import-outside-top-level]
+    import pwd  # ruff: ignore[import-outside-top-level]
 
     try:
         plugdev = grp.getgrnam("plugdev")
     except KeyError:
-        die(NO_ACCESS + rerun())
+        _die(message=NO_ACCESS + rerun())
     if plugdev.gr_gid in os.getgroups():
         return
     if pwd.getpwuid(os.getuid()).pw_name in plugdev.gr_mem:
-        die(NEW_GROUP + rerun())
-    die(NO_ACCESS + rerun())
+        _die(message=NEW_GROUP + rerun())
+    _die(message=NO_ACCESS + rerun())
 
 
-def clock():
+def clock() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def color(stream):
+def color(stream: TextIO) -> bool:
     if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
         return False
     if os.name == "nt" and "WT_SESSION" not in os.environ:
@@ -271,27 +307,49 @@ def color(stream):
     return stream.isatty()
 
 
-def command(args, **options):
+def command(  # ruff: ignore[too-many-arguments]
+    *,
+    args: list[str | pathlib.PurePath],
+    errors: str | None = None,
+    stderr: int | None = None,
+    stdin: int | BinaryIO | None = None,
+    stdout: int | None = None,
+    text: bool = False,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str | bytes]:
     if ARGS.verbose:
-        show(f"{clock()} $ {' '.join(map(str, args))}")
-    result = subprocess.run(args, check=False, **options)
+        show(text=f"{clock()} $ {' '.join(map(str, args))}")
+    result = subprocess.run(
+        args,
+        check=False,
+        errors=errors,
+        stderr=stderr,
+        stdin=stdin,
+        stdout=stdout,
+        text=text,
+        timeout=timeout,
+    )
     if ARGS.verbose:
-        show(f"{clock()}   exit {result.returncode}")
+        show(text=f"{clock()}   exit {result.returncode}")
     return result
 
 
-def delay(label):
+def delay(label: str) -> None:
     if not ARGS.delay:
         return
     for left in range(ARGS.delay, 0, -1):
-        show(f"\r{clock()} next: {label}; starting in {left:2d}s", end="", flush=True)
+        show(
+            end="",
+            flush=True,
+            text=f"\r{clock()} next: {label}; starting in {left:2d}s",
+        )
         time.sleep(1)
-    show(f"\r{clock()} next: {label}; starting now      ")
+    show(text=f"\r{clock()} next: {label}; starting now      ")
 
 
-def devices(args):
+def devices(args: list[str]) -> str:
     for _ in range(5):
-        out = run(args, timeout=30).stdout
+        out = run(args=args, timeout=30).stdout
         lines = out.splitlines()
         if not any("no permissions" in line for line in lines) or any(
             line.split()[1:2] in (["device"], ["recovery"], ["fastboot"])
@@ -299,22 +357,10 @@ def devices(args):
         ):
             return out
         time.sleep(1)
-    die(NO_ACCESS + rerun())
+    _die(message=NO_ACCESS + rerun())
 
 
-def die(message, prefix="ERROR: "):
-    if ARGS.shown not in (None, "error"):
-        print()
-    ARGS.shown = "error"
-    text = prefix + message
-    if "\n" not in text:
-        text = textwrap.fill(text, 79)
-    if prefix and color(sys.stderr):
-        text = f"\033[31m{text}\033[0m"
-    sys.exit(text)
-
-
-def digest(path, kind):
+def digest(*, kind: str, path: pathlib.Path) -> str:
     h = hashlib.new(kind)
     with path.open("rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
@@ -322,50 +368,52 @@ def digest(path, kind):
     return h.hexdigest()
 
 
-def download(build):
+def download(build: str) -> pathlib.Path:
     b = BUILDS[build]
     CACHE.mkdir(exist_ok=True, parents=True)
     ota = (
         CACHE
         / f"update-kindle-biscuit_puffin-{b.ns}_user_{build}_{b.number.zfill(13)}.bin"
     )
-    if not ota.is_file() or digest(ota, "sha256") != b.sha256:
+    if not ota.is_file() or digest(kind="sha256", path=ota) != b.sha256:
         page = (
             f"{FTVDB}{b.md5}-{b.number}-fire-os-{b.ftvdb_version}-{b.ns.lower()}"
             f"-{build}-{b.date}/"
         )
         request = urllib.request.Request(page, headers={"User-Agent": "Mozilla/5.0"})
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             with urllib.request.urlopen(request, timeout=60) as response:
                 links = re.findall(
                     r'https://[^"<> ]+\.bin', response.read().decode(errors="replace")
                 )
             if not links:
-                die("no download link on " + page)
+                _die(message="no download link on " + page)
             part = CACHE / (ota.name + ".part")
             response = urllib.request.urlopen(links[0], timeout=60)
             with response, part.open("wb") as out:
-                done, total = save(response, out, f"downloading OTA {build}")
+                done, total = save(
+                    label=f"downloading OTA {build}", out=out, response=response
+                )
         except (OSError, http.client.HTTPException) as e:
-            die(f"the download failed: {e!r}")
+            _die(message=f"the download failed: {e!r}")
         if total and done != total:
-            die(
-                f"the download stopped after {done} of {total} bytes."
+            _die(
+                message=f"the download stopped after {done} of {total} bytes."
                 " Run dot_restore_stock.py again."
             )
         part.replace(ota)
-    if digest(ota, "sha256") != b.sha256:
-        die(f"{ota} does not hash to {b.sha256}")
+    if digest(kind="sha256", path=ota) != b.sha256:
+        _die(message=f"{ota} does not hash to {b.sha256}")
     passed(f"OTA {build} verified")
     return ota
 
 
-def extract(ota, work):
-    with zipfile.ZipFile(ota) as z:
+def extract(*, ota: pathlib.Path, work: pathlib.Path) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    with zipfile.ZipFile(ota) as z:  # ruff: ignore[too-many-nested-blocks]
         with z.open("payload.bin") as f:
             h = f.read(24)
-            if h[:4] != b"CrAU" or struct.unpack(">Q", h[4:12])[0] != 2:
-                die("the OTA's payload.bin is not a version 2 update payload")
+            if h[:4] != b"CrAU" or struct.unpack(">Q", h[4:12])[0] != PAYLOAD_VERSION:
+                _die(message="the OTA's payload.bin is not a version 2 update payload")
             msize = struct.unpack(">Q", h[12:20])[0]
             sig = struct.unpack(">I", h[20:24])[0]
             manifest = f.read(msize)
@@ -373,12 +421,12 @@ def extract(ota, work):
         block = 4096
         partitions = {}
         for fn, _, v in fields(manifest):
-            if fn == 3:
+            if fn == BLOCK_SIZE_FIELD:
                 block = v
-            if fn == 13:
+            if fn == PARTITIONS_FIELD:
                 d, ops = {}, []
                 for a, _, c in fields(v):
-                    if a == 8:
+                    if a == OPERATIONS_FIELD:
                         ops.append(c)
                     else:
                         d[a] = c
@@ -389,31 +437,31 @@ def extract(ota, work):
         with z.open("payload.bin") as payload:
             for name in IMAGES:
                 if name not in partitions:
-                    die(f"the OTA has no {name} image")
+                    _die(message=f"the OTA has no {name} image")
                 info, ops = partitions[name]
                 path = work / (name + ".img")
-                if path.is_file() and digest(path, "sha256") == info[2].hex():
+                if path.is_file() and digest(kind="sha256", path=path) == info[2].hex():
                     passed(f"{name:>{max(map(len, IMAGES))}} matches the manifest")
                     continue
                 img = bytearray(info[1])
                 for op in ops:
                     o, extents = {}, []
                     for a, _, c in fields(op):
-                        if a == 6:
+                        if a == DST_EXTENTS_FIELD:
                             extents.append({x: y for x, _, y in fields(c)})
                         else:
                             o[a] = c
                     payload.seek(base + o.get(2, 0))
                     blob = payload.read(o.get(3, 0))
                     kind = o[1]
-                    if kind == 0:
+                    if kind == REPLACE:
                         raw = blob
-                    elif kind == 1:
+                    elif kind == REPLACE_BZ:
                         raw = bz2.decompress(blob)
-                    elif kind == 8:
+                    elif kind == REPLACE_XZ:
                         raw = lzma.decompress(blob)
                     else:
-                        die(f"{name} has op type {kind}")
+                        _die(message=f"{name} has op type {kind}")
                     pos = 0
                     for e in extents:
                         n = e[2] * block
@@ -421,35 +469,35 @@ def extract(ota, work):
                         img[at : at + n] = raw[pos : pos + n]
                         pos += n
                 path.write_bytes(memoryview(img)[: info[1]])
-                if digest(path, "sha256") != info[2].hex():
-                    die(name + " does not match the manifest")
+                if digest(kind="sha256", path=path) != info[2].hex():
+                    _die(message=name + " does not match the manifest")
                 passed(f"{name:>{max(map(len, IMAGES))}} matches the manifest")
 
 
-def fields(b):
+def fields(b: bytes) -> Iterator[tuple[int, int, int | bytes]]:
     i = 0
     while i < len(b):
-        k, i = varint(b, i)
+        k, i = varint(b=b, i=i)
         fn, wt = k >> 3, k & 7
-        if wt == 0:
-            v, i = varint(b, i)
-        elif wt == 2:
-            n, i = varint(b, i)
+        if wt == WIRE_VARINT:
+            v, i = varint(b=b, i=i)
+        elif wt == WIRE_LEN:
+            n, i = varint(b=b, i=i)
             v = b[i : i + n]
             i += n
-        elif wt == 1:
+        elif wt == WIRE_FIXED64:
             v = b[i : i + 8]
             i += 8
-        elif wt == 5:
+        elif wt == WIRE_FIXED32:
             v = b[i : i + 4]
             i += 4
         else:
-            die(f"the OTA's manifest has wire type {wt}")
+            _die(message=f"the OTA's manifest has wire type {wt}")
         yield fn, wt, v
 
 
-def gpt_intact(hdr, entries):
-    if hdr[:8] != b"EFI PART" or struct.unpack("<I", hdr[12:16])[0] != 92:
+def gpt_intact(*, entries: bytes, hdr: bytes) -> bool:
+    if hdr[:8] != b"EFI PART" or struct.unpack("<I", hdr[12:16])[0] != GPT_HEADER_SIZE:
         return False
     if struct.unpack("<II", hdr[80:88]) != (128, 128):
         return False
@@ -462,7 +510,7 @@ def gpt_intact(hdr, entries):
     )
 
 
-def main():
+def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -487,55 +535,59 @@ def main():
     ARGS.delay = options.delay
     ARGS.verbose = options.verbose or options.delay > 0
     if not shutil.which("adb"):
-        die("adb not found: install Android platform-tools")
+        _die(message="adb not found: install Android platform-tools")
     check_user()
     check_adb()
     work = CACHE / ("stock-" + build)
     work.mkdir(exist_ok=True, parents=True)
-    extract(download(build), work)
+    extract(ota=download(build), work=work)
 
     if not usb_serial():
-        die(
-            "no Dot found on USB. Connect the rooted Dot with a USB cable, booted or"
-            " in TWRP."
+        _die(
+            message="no Dot found on USB. Connect the rooted Dot with a USB cable,"
+            " booted or in TWRP."
         )
-    adb_state = run(["adb", "get-state"], timeout=30).stdout.strip()
+    adb_state = run(args=["adb", "get-state"], timeout=30).stdout.strip()
     if adb_state == "device":
-        show("Restarting the Dot into recovery (TWRP). Waiting for it to start.")
-        run(["adb", "reboot", "recovery"], timeout=60)
+        show(text="Restarting the Dot into recovery (TWRP). Waiting for it to start.")
+        run(args=["adb", "reboot", "recovery"], timeout=60)
         time.sleep(15)
         try:
-            run(["adb", "wait-for-recovery"], timeout=300)
+            run(args=["adb", "wait-for-recovery"], timeout=300)
         except subprocess.TimeoutExpired:
-            die("the Dot did not reach recovery (TWRP) within 5 minutes")
+            _die(message="the Dot did not reach recovery (TWRP) within 5 minutes")
     elif adb_state != "recovery":
-        die(
-            "the Dot is neither in recovery (TWRP) nor accessible via adb. If it is on"
-            " stock Fire OS already, there is nothing to restore; dot_root.py roots it."
+        _die(
+            message="the Dot is neither in recovery (TWRP) nor accessible via adb."
+            " If it is on stock Fire OS already, there is nothing to restore;"
+            " dot_root.py roots it."
         )
     deadline = time.monotonic() + 30
     version = ""
-    while not version or "mtp" not in rshell("getprop sys.usb.config"):
+    while not version or "mtp" not in rshell(command="getprop sys.usb.config"):
         if time.monotonic() > deadline:
-            die("TWRP did not finish starting within 30 seconds")
+            _die(message="TWRP did not finish starting within 30 seconds")
         time.sleep(1)
-        version = rshell("getprop ro.twrp.version")
+        version = rshell(command="getprop ro.twrp.version")
         if not version[:1].isdigit():
             version = ""
         elif not version.startswith("3.2."):
-            die("this needs amonet v1.1.0's TWRP 3.2.3")
-    device = rshell("getprop ro.product.device")
+            _die(message="this needs amonet v1.1.0's TWRP 3.2.3")
+    device = rshell(command="getprop ro.product.device")
     if device != "biscuit":
-        die(f"this is not an Echo Dot (2nd Gen): TWRP reports the device {device!r}")
+        _die(
+            message="this is not an Echo Dot (2nd Gen): TWRP reports the"
+            f" device {device!r}"
+        )
 
-    raw = read_sectors(0, 34)
-    if not gpt_intact(raw[512:1024], raw[1024:]):
-        size = rshell(f"blockdev --getsize64 {DISK}")
+    raw = read_sectors(count=34, start=0)
+    if not gpt_intact(entries=raw[1024:], hdr=raw[512:1024]):
+        size = rshell(command=f"blockdev --getsize64 {DISK}")
         if not size.isdigit():
-            die("could not read the Dot's disk size")
-        tail = read_sectors(int(size) // 512 - 33, 33)
+            _die(message="could not read the Dot's disk size")
+        tail = read_sectors(count=33, start=int(size) // 512 - 33)
         raw = raw[:512] + tail[-512:] + tail[:-512]
-        show("the primary partition table is damaged; using the backup")
+        show(text="the primary partition table is damaged; using the backup")
     saved = work / f"current-gpt-{os.environ['ANDROID_SERIAL']}.bin"
     if not saved.exists():
         saved.write_bytes(raw)
@@ -556,54 +608,66 @@ def main():
         files[image] = work / (image + ".img")
     for key, part, _, _ in WRITES:
         if files[key].stat().st_size > parts[part][2] * 512:
-            die(f"{files[key].name} does not fit {part}")
-    boot0 = rshell("cat /sys/block/mmcblk0boot0/size")
+            _die(message=f"{files[key].name} does not fit {part}")
+    boot0 = rshell(command="cat /sys/block/mmcblk0boot0/size")
     if (
         not boot0.isdigit()
         or (work / "preloader.img").stat().st_size != int(boot0) * 512
     ):
-        die(f"preloader.img is not the size of boot0 ({boot0} sectors)")
+        _die(message=f"preloader.img is not the size of boot0 ({boot0} sectors)")
     passed("stock partition table built from this Dot's own")
     warn(
-        f"About to overwrite this Dot's bootloaders, system and data with stock {build}."
+        "About to overwrite this Dot's bootloaders, system and data with"
+        f" stock {build}."
     )
     warn("Root is gone afterwards; dot_root.py puts it back.")
     try:
         for left in range(10, 0, -1):
             show(
-                "\r" + paint(f"Starting in {left:2d} s. Ctrl-C cancels.", 33),
-                "warn",
                 end="",
                 flush=True,
+                kind="warn",
+                text="\r"
+                + paint(code=33, text=f"Starting in {left:2d} s. Ctrl-C cancels."),
             )
             time.sleep(1)
     except KeyboardInterrupt:
         print()
-        die("stopped; nothing was written", prefix="")
-    show("\r" + paint("Starting now.                     ", 33), "warn")
+        _die(message="stopped; nothing was written", prefix="")
+    show(
+        kind="warn",
+        text="\r" + paint(code=33, text="Starting now.                     "),
+    )
 
-    progress = Progress(15)
+    progress = Progress(STEPS)
     try:
-        restore(progress, build, work, files, parts, backup_sector)
+        restore(
+            backup_sector=backup_sector,
+            build=build,
+            files=files,
+            parts=parts,
+            progress=progress,
+            work=work,
+        )
     except subprocess.TimeoutExpired as error:
         progress.fail(
             f"{' '.join(map(str, error.cmd))} did not finish in {error.timeout:.0f}"
             " seconds. Do not reboot; run dot_restore_stock.py again."
         )
     except KeyboardInterrupt:
-        if progress.step == 15:
-            die(f"stopped; stock {build} is in place", prefix="")
+        if progress.step == STEPS:
+            _die(message=f"stopped; stock {build} is in place", prefix="")
         progress.fail(
             "stopped part way. Do not reboot; run dot_restore_stock.py again."
         )
 
 
-def md5_mismatch(command, want):
-    got = (rshell(command).split("\n")[-1].split(" ") + [""])[0]
+def md5_mismatch(*, command: str, want: str) -> str:
+    got = [*rshell(command=command).split("\n")[-1].split(" "), ""][0]
     return "" if got == want else f": read {got or 'nothing'}, expected {want}"
 
 
-def on_usb(line):
+def on_usb(line: str) -> bool:
     if os.name != "nt":
         return " usb:" in line
     parts = line.split()
@@ -614,22 +678,22 @@ def on_usb(line):
     )
 
 
-def paint(text, code):
+def paint(*, code: int, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if color(sys.stdout) else text
 
 
-def passed(message):
+def passed(message: str) -> None:
     try:
         "\u2705".encode(sys.stdout.encoding or "ascii")
         mark = "\u2705"
     except (LookupError, UnicodeEncodeError):
         mark = "ok"
-    show(f"{mark} {message}")
+    show(text=f"{mark} {message}")
 
 
-def read_sectors(start, count):
+def read_sectors(*, count: int, start: int) -> bytes:
     raw = command(
-        [
+        args=[
             "adb",
             "exec-out",
             f"dd if={DISK} bs=512 skip={start} count={count} 2>/dev/null",
@@ -639,71 +703,95 @@ def read_sectors(start, count):
         timeout=60,
     ).stdout
     if len(raw) != count * 512:
-        die(f"read {len(raw)} bytes of the Dot's partition table, not {count * 512}")
+        _die(
+            message=f"read {len(raw)} bytes of the Dot's partition table,"
+            f" not {count * 512}"
+        )
     return raw
 
 
-def rerun():
+def rerun() -> str:
     return "sg plugdev -c " + shlex.quote(shlex.join([sys.executable, *sys.argv]))
 
 
-def restore(progress, build, work, files, parts, backup_sector):
-    rshell(UNMOUNT)
+def restore(  # ruff: ignore[too-many-arguments]
+    *,
+    backup_sector: int,
+    build: str,
+    files: dict[str, pathlib.Path],
+    parts: dict[str, tuple[int, int, int]],
+    progress: Progress,
+    work: pathlib.Path,
+) -> None:
+    rshell(command=UNMOUNT)
     for key, part, label, estimate in WRITES:
-        write(progress, files[key], parts[part][1], label, estimate)
+        write(
+            estimate=estimate,
+            label=label,
+            path=files[key],
+            progress=progress,
+            sector=parts[part][1],
+        )
     write(
-        progress,
-        files["gpt-backup.bin"],
-        backup_sector,
-        "write stock partition table (backup)",
-        "5 s",
+        estimate="5 s",
+        label="write stock partition table (backup)",
+        path=files["gpt-backup.bin"],
+        progress=progress,
+        sector=backup_sector,
     )
     write(
-        progress,
-        files["gpt-primary.bin"],
-        0,
-        "write stock partition table (primary)",
-        "5 s",
+        estimate="5 s",
+        label="write stock partition table (primary)",
+        path=files["gpt-primary.bin"],
+        progress=progress,
+        sector=0,
     )
 
-    progress.begin("format cache and userdata", "30 s")
-    if "No problems found" not in rshell("sgdisk --verify " + DISK):
+    progress.begin(estimate="30 s", label="format cache and userdata")
+    if "No problems found" not in rshell(command="sgdisk --verify " + DISK):
         progress.fail("sgdisk does not accept the new table; do not reboot")
-    rshell(UNMOUNT + "; blockdev --rereadpt " + DISK)
-    if rshell('grep -c "mmcblk0p1[78]$" /proc/partitions') != "0":
+    rshell(command=UNMOUNT + "; blockdev --rereadpt " + DISK)
+    if rshell(command='grep -c "mmcblk0p1[78]$" /proc/partitions') != "0":
         progress.fail(
-            "the kernel still sees amonet's partitions; do not reboot, reread the table first"
+            "the kernel still sees amonet's partitions; do not reboot,"
+            " reread the table first"
         )
     number, _, sectors = parts["userdata"]
-    if not rshell(f'grep " {sectors // 2} mmcblk0p{number}$" /proc/partitions'):
+    if not rshell(command=f'grep " {sectors // 2} mmcblk0p{number}$" /proc/partitions'):
         progress.fail("userdata is not its stock size; do not reboot")
     cache = parts["cache"][0]
     out = rshell(
-        f"mke2fs -q -t ext4 {DISK}p{cache} && mke2fs -q -t ext4 {DISK}p{number}"
+        command=f"mke2fs -q -t ext4 {DISK}p{cache} && mke2fs -q -t ext4 {DISK}p{number}"
         " && echo formatted"
     )
     if out.split("\n")[-1] != "formatted":
         progress.fail("cache and userdata did not format; do not reboot")
     progress.end()
 
-    progress.begin("write preloader to boot0", "5 s")
+    progress.begin(estimate="5 s", label="write preloader to boot0")
     preloader = work / "preloader.img"
-    if run(["adb", "push", preloader, "/tmp/pl.img"], timeout=120).returncode != 0:
+    staged = DOT_TMP / "pl.img"
+    if run(args=["adb", "push", preloader, staged], timeout=120).returncode != 0:
         progress.fail("the preloader did not reach the Dot; do not reboot")
     rshell(
-        "echo 0 > /sys/block/mmcblk0boot0/force_ro; "
-        "dd if=/tmp/pl.img of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
+        command="echo 0 > /sys/block/mmcblk0boot0/force_ro; "
+        f"dd if={staged} of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
         "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
         "echo 3 > /proc/sys/vm/drop_caches"
     )
-    wrong = md5_mismatch("md5sum /dev/block/mmcblk0boot0", digest(preloader, "md5"))
+    wrong = md5_mismatch(
+        command="md5sum /dev/block/mmcblk0boot0",
+        want=digest(kind="md5", path=preloader),
+    )
     if wrong:
         progress.fail(
             f"boot0 does not match the {build} preloader{wrong}; do not reboot"
         )
     progress.end()
 
-    progress.begin("reboot into stock " + build, "1.5 min to an orange ring")
+    progress.begin(
+        estimate="1.5 min to an orange ring", label="reboot into stock " + build
+    )
     progress.halt()
     print()
     passed(f"stock {build} is in place after {progress.minutes()}m.")
@@ -711,23 +799,25 @@ def restore(progress, build, work, files, parts, backup_sector):
         "If you will root it again, do not set it up in the Alexa app first: on Wi-Fi"
         " it can take an update to a build dot_root.py has not met."
     )
-    try:
-        run(["adb", "shell", "-n", "reboot"], timeout=60)
-    except subprocess.TimeoutExpired:
-        pass
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        run(args=["adb", "shell", "-n", "reboot"], timeout=60)
     cache_note()
 
 
-def rshell(command, timeout=300):
-    out = run(["adb", "shell", "-n", command], timeout=timeout).stdout.replace("\r", "")
+def rshell(*, command: str, timeout: float = 300) -> str:
+    out = run(args=["adb", "shell", "-n", command], timeout=timeout).stdout.replace(
+        "\r", ""
+    )
     return "\n".join(
         line for line in out.split("\n") if not line.startswith("__bionic_open_tzdata")
     ).strip()
 
 
-def run(args, timeout=None):
+def run(
+    *, args: list[str | pathlib.PurePath], timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
     return command(
-        args,
+        args=args,
         errors="replace",
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
@@ -737,11 +827,13 @@ def run(args, timeout=None):
     )
 
 
-def save(response, out, label):
+def save(
+    *, label: str, out: BinaryIO, response: http.client.HTTPResponse
+) -> tuple[int, int]:
     total = int(response.headers.get("Content-Length") or 0)
-    div, unit = (1e3, "KB") if 0 < total < 1e6 else (1e6, "MB")
+    div, unit = (1e3, "KB") if 0 < total < MEGA else (MEGA, "MB")
 
-    def meter(done):
+    def meter(done: int) -> str:
         if total:
             return (
                 f"{done / div:.1f} of {total / div:.1f} {unit} ({100 * done // total}%)"
@@ -752,30 +844,32 @@ def save(response, out, label):
     if len(label) > room:
         label = label[: room - 3] + "..."
     done = 0
-    show(f"{label:<{room}} {meter(0):>{78 - room}}", end="", flush=True)
+    show(end="", flush=True, text=f"{label:<{room}} {meter(0):>{78 - room}}")
     for block in iter(lambda: response.read(1 << 20), b""):
         out.write(block)
         done += len(block)
-        show(f"\r{label:<{room}} {meter(done):>{78 - room}}", end="", flush=True)
+        show(end="", flush=True, text=f"\r{label:<{room}} {meter(done):>{78 - room}}")
     print()
     return done, total
 
 
-def show(text, kind="info", **options):
-    if ARGS.shown not in (None, kind):
+def show(*, kind: str = "info", text: str, **options: str | bool) -> None:
+    if ARGS.shown not in {None, kind}:
         print()
     ARGS.shown = kind
     print(text, **options)
 
 
-def stock_gpt(raw):
+def stock_gpt(  # ruff: ignore[too-many-locals]
+    raw: bytes,
+) -> tuple[bytes, bytes, int, dict[str, tuple[int, int, int]]]:
     mbr, hdr, entries = (
         raw[:512],
         bytearray(raw[512:1024]),
         raw[1024 : 1024 + 128 * 128],
     )
-    if not gpt_intact(hdr, entries):
-        die("neither copy of the Dot's partition table is intact")
+    if not gpt_intact(entries=entries, hdr=hdr):
+        _die(message="neither copy of the Dot's partition table is intact")
     last_usable = struct.unpack("<Q", hdr[48:56])[0]
     backup_lba = max(struct.unpack("<QQ", hdr[24:40]))
     names = [
@@ -790,7 +884,7 @@ def stock_gpt(raw):
         if e[:16] == b"\0" * 16:
             continue
         name = names[i]
-        if amonet and name in ("boot_a", "boot_b"):
+        if amonet and name in {"boot_a", "boot_b"}:
             continue
         if name.endswith("_x"):
             name = name[:-2]
@@ -799,11 +893,13 @@ def stock_gpt(raw):
             e[40:48] = struct.pack("<Q", last_usable)
         new[k * 128 : (k + 1) * 128] = e
         k += 1
-    if k != 16:
-        die(f"the stock table would have {k} partitions, not 16")
+    if k != STOCK_PARTITIONS:
+        _die(
+            message=f"the stock table would have {k} partitions, not {STOCK_PARTITIONS}"
+        )
     entries_crc = zlib.crc32(new) & 0xFFFFFFFF
 
-    def header(my, alternate, at):
+    def header(*, alternate: int, at: int, my: int) -> bytes:
         h = bytearray(hdr[:92])
         h[16:20] = b"\0" * 4
         h[24:32] = struct.pack("<Q", my)
@@ -822,15 +918,18 @@ def stock_gpt(raw):
             first,
             last - first + 1,
         )
-    primary = mbr + header(1, backup_lba, 2) + bytes(new)
-    backup = bytes(new) + header(backup_lba, 1, backup_lba - 32)
+    primary = mbr + header(alternate=backup_lba, at=2, my=1) + bytes(new)
+    backup = bytes(new) + header(alternate=1, at=backup_lba - 32, my=backup_lba)
     return primary, backup, backup_lba - 32, parts
 
 
-def usb_serial():
+def usb_serial() -> str | None:
     if USER_SERIAL:
         if ":" in USER_SERIAL:
-            die("ANDROID_SERIAL names a network device; this needs the Dot on USB")
+            _die(
+                message="ANDROID_SERIAL names a network device;"
+                " this needs the Dot on USB"
+            )
         devices(["adb", "devices", "-l"])
         return USER_SERIAL
     out = devices(["adb", "devices", "-l"])
@@ -840,7 +939,7 @@ def usb_serial():
         if on_usb(line) and "no permissions" not in line
     ]
     if len(usb) > 1:
-        die(MORE_THAN_ONE)
+        _die(message=MORE_THAN_ONE)
     if usb:
         os.environ["ANDROID_SERIAL"] = usb[0]
         return usb[0]
@@ -848,37 +947,41 @@ def usb_serial():
     return None
 
 
-def varint(b, i):
+def varint(*, b: bytes, i: int) -> tuple[int, int]:
     r = s = 0
     while True:
         x = b[i]
         i += 1
         r |= (x & 0x7F) << s
         s += 7
-        if x < 0x80:
+        if x < VARINT_MORE:
             return r, i
 
 
-def warn(text):
-    show(paint(textwrap.fill(text, 79), 33), "warn")
+def warn(text: str) -> None:
+    show(kind="warn", text=paint(code=33, text=textwrap.fill(text, 79)))
 
 
-def write(progress, path, sector, label, estimate):
+def write(
+    *, estimate: str, label: str, path: pathlib.Path, progress: Progress, sector: int
+) -> None:
     n = path.stat().st_size
     if sector % 8 == 0 and n % 4096 == 0:
         bs, seek, count = 4096, sector // 8, n // 4096
     else:
         bs, seek, count = 512, sector, n // 512
-    progress.begin(label, estimate)
-    if rshell(f"rm -f {STATUS} && echo cleared").split("\n")[-1] != "cleared":
+    progress.begin(estimate=estimate, label=label)
+    if rshell(command=f"rm -f {STATUS} && echo cleared").split("\n")[-1] != "cleared":
         progress.fail(f"{STATUS} could not be cleared before {label}; do not reboot")
     with path.open("rb") as f:
         result = command(
-            [
+            args=[
                 "adb",
                 "exec-in",
-                f"dd of={DISK} bs={bs} seek={seek} 2>/dev/null;"
-                f" echo $? > {STATUS}.part && mv {STATUS}.part {STATUS}",
+                (
+                    f"dd of={DISK} bs={bs} seek={seek} 2>/dev/null;"
+                    f" echo $? > {STATUS}.part && mv {STATUS}.part {STATUS}"
+                ),
             ],
             stderr=subprocess.STDOUT,
             stdin=f,
@@ -891,7 +994,9 @@ def write(progress, path, sector, label, estimate):
         )
     deadline = time.monotonic() + 120
     while True:
-        status = rshell(f"cat {STATUS} 2>/dev/null || echo running").split("\n")[-1]
+        status = rshell(command=f"cat {STATUS} 2>/dev/null || echo running").split(
+            "\n"
+        )[-1]
         if status.isdigit():
             break
         if time.monotonic() > deadline:
@@ -899,11 +1004,11 @@ def write(progress, path, sector, label, estimate):
         time.sleep(1)
     if status != "0":
         progress.fail(f"{label} failed on the Dot: dd exited {status}; do not reboot")
-    if rshell(FLUSH).split("\n")[-1] != "flushed":
+    if rshell(command=FLUSH).split("\n")[-1] != "flushed":
         progress.fail(label + " could not be flushed; do not reboot")
     wrong = md5_mismatch(
-        f"dd if={DISK} bs={bs} skip={seek} count={count} 2>/dev/null | md5sum",
-        digest(path, "md5"),
+        command=f"dd if={DISK} bs={bs} skip={seek} count={count} 2>/dev/null | md5sum",
+        want=digest(kind="md5", path=path),
     )
     if wrong:
         progress.fail(f"{label} did not verify{wrong}; do not reboot")
@@ -914,9 +1019,9 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        die("stopped; nothing was written", prefix="")
+        _die(message="stopped; nothing was written", prefix="")
     except subprocess.TimeoutExpired as error:
-        die(
-            f"{' '.join(map(str, error.cmd))} did not finish in {error.timeout:.0f}"
-            " seconds; nothing was written"
+        _die(
+            message=f"{' '.join(map(str, error.cmd))} did not finish in"
+            f" {error.timeout:.0f} seconds; nothing was written"
         )
