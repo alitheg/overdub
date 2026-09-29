@@ -20,6 +20,7 @@ from typing import NoReturn, TextIO
 ADBKEY = "/data/local/bin/adb_keys"
 ADBKEYS = "/data/misc/adb/adb_keys"
 API_PORT = 6053
+APPLIED = "/data/local/bin/.overdub-applied"
 BIN = "/data/local/bin/overdub"
 BOOT = "/sbin/.core/img/.core/service.d/overdub.sh"
 KEY = "/data/local/bin/.overdub-noise-key"
@@ -32,7 +33,7 @@ SENDKEY = "/data/local/bin/.overdub-sendspin-key"
 SENDSPIN_PORT = 8928
 STAGE = "/data/local/tmp/overdub-install"
 STATE = argparse.Namespace(pending=False)
-SWEPT = [BOOT, BIN, BIN + ".new", KEY, SENDKEY, STAGE, MAP, LOG]
+SWEPT = [BOOT, BIN, BIN + ".new", KEY, SENDKEY, APPLIED, STAGE, MAP, LOG]
 
 
 def adb(*args: str) -> tuple[int, str]:
@@ -83,7 +84,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
 
     su(f"rm -f {BOOT}")
     su(
-        f"rm -f {BIN} {BIN}.new {KEY} {SENDKEY} {SENDKEY}.new-* {ADBKEY}\n"
+        f"rm -f {BIN} {BIN}.new {KEY} {SENDKEY} {SENDKEY}.new-* {ADBKEY} {APPLIED}\n"
         f"rm -rf {STAGE} {MAP}\n"
         "rm -f /data/local/tmp/overdub /data/local/tmp/s.sh"
     )

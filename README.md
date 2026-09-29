@@ -297,6 +297,10 @@ deploy/install.py kitchen                          # binary, boot script, key
 
 - `install.py` installs `deploy/mapdump/mapdump.jar` if it is there, and says
   which.
+- Running it again is safe. It pushes only what differs from the Dot, and
+  restarts the daemon only when what runs may differ from what is installed.
+  With nothing to change it ends `Already installed; nothing changed.`
+  If it also warned, it ends `Nothing changed; see the warning above.`
 - With more than one Dot on `adb`, set `ANDROID_SERIAL`:
 
 ```sh

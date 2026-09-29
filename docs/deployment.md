@@ -82,6 +82,33 @@
   so a refusal cannot follow a freshly printed API key. An empty key would pass
   every read-back, because every one of no lines is on the device. Installed, it would set `ro.adb.secure` against a key that
   authenticates nobody, which applies to USB too and locks the operator out.
+- Each file is compared with the Dot's copy before it is pushed: by md5, and
+  the adb key by its text. A match skips the push, not the read-back after it.
+- The daemon restarts only when the running one may not match what is
+  installed. After each verified restart, `install.py` writes
+  `bin/.overdub-applied`: the new pid and the md5s of the binary, the API key
+  and the adb key. A later run skips the restart only when the running pid and
+  all three md5s match it.
+- A stamp is written only after a restart, so a run stopped before its restart
+  leaves an old one, and the next run restarts. A reboot changes the pid, so
+  the first install after one restarts once.
+- File times cannot decide this. The mtime of `/proc/<pid>` is set when the
+  kernel creates its inode, which can happen again under memory pressure, and
+  the Dot's clock is wrong until network time.
+- The daemon reads the API key once, at start, and Home Assistant learns the
+  Network ADB options only when it connects, so a change to either key needs a
+  restart to reach it.
+- A restart drops Home Assistant and Music Assistant and hands the button to
+  Alexa for about 5 seconds, and a new boot script alone gains nothing from
+  one: the supervisor holds the arguments it started with. So a rename is
+  reported as REBOOT REQUIRED without a kill.
+- A repair counts as a change, so that run does not end `Already installed`:
+  a mode on `/data/local/bin`, the API key or the boot script, or an owner or
+  mode under `/data/local/map`. Those are read from `ls -ln`, which prints a
+  link count under busybox and none under toolbox, so both shapes are parsed.
+- A run that changed nothing but warned, such as a daemon not running or a
+  rename awaiting a reboot, ends `Nothing changed; see the warning above.`
+  instead, so the last line does not read as success.
 - An install cannot revoke. adbd authenticates against
   `/data/misc/adb/adb_keys`, which the daemon writes only on Secure, and
   `ro.adb.secure` is not persistent. An install with no key stops Secure being
@@ -93,7 +120,8 @@
 
 1. Delete the boot script, alone. It is the only thing that starts the daemon
    at boot, so a reboot part way through leaves nothing running.
-2. Delete the binary, the keys, the staging directory and `/data/local/map`.
+2. Delete the binary, the keys, the applied stamp, the staging directory and
+   `/data/local/map`.
    The binary goes before the kill because the supervisor is a live shell
    loop: deleting the boot script does not stop it, and it respawns a killed
    daemon 5 seconds later. The loop runs `while [ -x "$BIN" ]`, so removing

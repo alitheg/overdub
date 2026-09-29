@@ -793,7 +793,8 @@ Each is refused, and each has a test that fails without it.
 - So every stop that can writes first: switch off, signal, stuck key, ESPHome
   listener returning, and `serve` returning an error. Each closes the listener
   and waits for the client to stop serving. `os.Exit` runs no deferred
-  function, and `install.py` stops the old daemon with `SIGTERM`.
+  function, and `install.py` stops the old daemon with `SIGTERM` when the running
+  daemon may not match what is installed; docs/deployment.md says when.
 - Each wait is bounded by `sendspinFlush` (2 seconds); a write still running
   is abandoned. That needs a write 50 times slower than any observed.
 - The keeper's wake is cleared before the keeper stops. A set arriving then

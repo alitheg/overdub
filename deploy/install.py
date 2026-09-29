@@ -29,14 +29,26 @@ from typing import Callable, NoReturn, TextIO
 ADB_STAGE = "/data/local/tmp/overdub-adbkey"
 BIN_DIR = "/data/local/bin"
 ADB_KEYS = BIN_DIR + "/adb_keys"
+APPLIED = BIN_DIR + "/.overdub-applied"
 BINARY = BIN_DIR + "/overdub"
 BOOT = "/sbin/.core/img/.core/service.d/overdub.sh"
 CLEANUP_WAIT = 30
 DNS_LABEL = 63
 KEY = "/data/local/bin/.overdub-noise-key"
+KEY_LINE = re.compile(r"ssh-|[A-Za-z0-9+/]{32,}")
 KEY_SHAPE = re.compile(r"[A-Za-z0-9+/]{43}=")
 LABEL = 14
 INDENT = " " * (LABEL + 4)
+LS_LINES = (
+    re.compile(
+        r"^([-d][rwxst-]{9})\s+(\d+)\s+(\d+)\s+(?:\d+\s+)?\d{4}-\d\d-\d\d\s",
+        re.MULTILINE,
+    ),
+    re.compile(
+        r"^([-d][rwxst-]{9})\s+\d+\s+(\d+)\s+(\d+)\s+\d+\s+[A-Z][a-z]{2}\s",
+        re.MULTILINE,
+    ),
+)
 MAP_DIR = "/data/local/map"
 MD5_SHAPE = re.compile(r"^[0-9a-f]{32}", re.MULTILINE)
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -44,11 +56,15 @@ STAGE = "/data/local/tmp/overdub-install"
 STATE = argparse.Namespace(
     adb_key_landed=False,
     adb_staged=False,
+    binary_changed=False,
+    boot_changed=False,
+    changed=False,
     key_landed=False,
     pending=False,
     staged=False,
     temp=[],
     timeout=None,
+    warned=False,
 )
 STOP_SIGNALS = ("SIGBREAK", "SIGHUP", "SIGINT", "SIGTERM")
 
@@ -77,7 +93,7 @@ def adb_key_lines() -> tuple[pathlib.Path, list[str] | None]:
     if "PRIVATE KEY" in text:
         usage(f"{path} looks like a PRIVATE key; ADBKEY wants the .pub")
     lines = [line.strip() for line in text.split("\n") if line.strip()]
-    if not any(re.match(r"ssh-|[A-Za-z0-9+/]{32,}", line) for line in lines):
+    if not any(KEY_LINE.match(line) for line in lines):
         usage(f"{path} is empty or does not look like an adb public key")
     return path, lines
 
@@ -87,6 +103,19 @@ def adb_ok(*args: str) -> str:
     if code != 0:
         fail("adb", f"adb {' '.join(args)} failed:", *out.strip().split("\n"))
     return out
+
+
+def applied(pid: str) -> str:
+    listing = su(f"md5 {BINARY} {KEY} {ADB_KEYS} 2>/dev/null")[1]
+    found = {
+        path: digest
+        for digest, path in re.findall(
+            r"^([0-9a-f]{32})\s+(\S+)$", listing, re.MULTILINE
+        )
+    }
+    return " ".join(
+        [f"pid={pid}"] + [found.get(path, "none") for path in (BINARY, KEY, ADB_KEYS)]
+    )
 
 
 def attempt(*, action: Callable[[], object], fix: str, label: str) -> None:
@@ -165,6 +194,8 @@ def build() -> None:
 
 
 def check_key_mode() -> str | None:
+    if first_field(start="-", text=su(f"ls -l {KEY}")[1]) != "-rw-------":
+        STATE.changed = True
     su(f"chmod 600 {KEY}")
     mode = first_field(start="-", text=su(f"ls -l {KEY}")[1])
     if mode != "-rw-------":
@@ -245,6 +276,8 @@ def first_field(*, start: str, text: str) -> str:
 
 def install_adb_key(*, lines: list[str] | None, path: pathlib.Path) -> None:
     if lines is None:
+        if probe(f"-f {ADB_KEYS}") != "no":
+            STATE.changed = True
         su(f"rm -f {ADB_KEYS}")
         if probe(f"-f {ADB_KEYS}") != "no":
             fail(
@@ -260,6 +293,14 @@ def install_adb_key(*, lines: list[str] | None, path: pathlib.Path) -> None:
             " reboots.",
         )
         return
+    code, answer = su(f"cat {ADB_KEYS}; echo; echo --read-ok--")
+    on_device = [line.strip() for line in answer.split("\n")]
+    keys = [line for line in on_device if KEY_LINE.match(line)]
+    wanted = [line for line in lines if KEY_LINE.match(line)]
+    if code == 0 and "--read-ok--" in on_device and keys == wanted:
+        ok("adb key", "unchanged; Network ADB will offer Secure")
+        return
+    STATE.changed = True
     stage(directory=ADB_STAGE, flag="adb_staged", label="adb key")
     adb_ok("push", str(path), ADB_STAGE + "/k.pub")
     STATE.adb_key_landed = True
@@ -311,6 +352,7 @@ def install_api_key() -> None:
         ok("API key", "kept the one already on the device")
         return
 
+    STATE.changed = True
     key = base64.b64encode(os.urandom(32)).decode()
     keyfile = temp_file(key + "\n")
     stage(directory=STAGE, flag="staged", label="API key")
@@ -350,20 +392,31 @@ def install_api_key() -> None:
 
 
 def install_binary(boot_script: str) -> None:
-    adb_ok("push", str(ROOT / "build/overdub"), "/data/local/tmp/overdub")
-    adb_ok("push", boot_script, "/data/local/tmp/s.sh")
-    su_ok(
-        f"mkdir -p {BIN_DIR}\n"
-        f"chmod 700 {BIN_DIR}\n"
-        f"cp /data/local/tmp/overdub {BINARY}.new\n"
-        f"chmod 755 {BINARY}.new\n"
-        f"mv -f {BINARY}.new {BINARY}\n"
-        f"cp /data/local/tmp/s.sh {BOOT}\n"
-        f"chmod 755 {BOOT}\n"
-        "rm -f /data/local/tmp/overdub /data/local/tmp/s.sh"
-    )
-
     built = md5(ROOT / "build/overdub")
+    STATE.binary_changed = remote_md5(BINARY) != built or probe(f"-x {BINARY}") != "yes"
+    STATE.boot_changed = (
+        remote_md5(BOOT) != md5(boot_script) or probe(f"-x {BOOT}") != "yes"
+    )
+    STATE.changed |= STATE.binary_changed or STATE.boot_changed
+    if not re.search(r"^drwx------", su(f"ls -ldn {BIN_DIR}")[1], re.MULTILINE):
+        STATE.changed = True
+    su_ok(f"mkdir -p {BIN_DIR}\nchmod 700 {BIN_DIR}")
+    if STATE.binary_changed:
+        adb_ok("push", str(ROOT / "build/overdub"), "/data/local/tmp/overdub")
+        su_ok(
+            f"cp /data/local/tmp/overdub {BINARY}.new\n"
+            f"chmod 755 {BINARY}.new\n"
+            f"mv -f {BINARY}.new {BINARY}\n"
+            "rm -f /data/local/tmp/overdub"
+        )
+    if STATE.boot_changed:
+        adb_ok("push", boot_script, "/data/local/tmp/s.sh")
+        su_ok(
+            f"cp /data/local/tmp/s.sh {BOOT}\n"
+            f"chmod 755 {BOOT}\n"
+            "rm -f /data/local/tmp/s.sh"
+        )
+
     installed = remote_md5(BINARY)
     if not installed:
         fail("binary", "The device did not hash the binary.")
@@ -374,7 +427,7 @@ def install_binary(boot_script: str) -> None:
         fail("binary", "The device did not say whether the binary is executable.")
     if answer != "yes":
         fail("binary", "The binary landed, but is not executable.")
-    ok("binary", f"md5 {built}")
+    ok("binary", f"{'md5' if STATE.binary_changed else 'unchanged, md5'} {built}")
 
     mode = su(f"ls -ldn {BIN_DIR}")[1]
     found = re.search(r"^d[rwx-]{9}", mode, re.MULTILINE)
@@ -407,7 +460,8 @@ def install_boot_script(boot_script: str) -> None:
         fail("boot script", "The device did not say whether it is executable.")
     if answer != "yes":
         fail("boot script", "The boot script landed, but is not executable.")
-    ok("boot script", f"{BOOT.rsplit('/', 2)[1]}/overdub.sh")
+    where = f"{BOOT.rsplit('/', 2)[1]}/overdub.sh"
+    ok("boot script", where if STATE.boot_changed else f"{where} unchanged")
 
 
 def install_mapdump() -> None:
@@ -436,16 +490,25 @@ def install_mapdump() -> None:
                 " one, so nothing here can tell whether the command box is offered.",
             )
         return
-    adb_ok("push", str(jar), "/data/local/tmp/mapdump.jar")
+    built = md5(jar)
+    jar_changed = remote_md5(f"{MAP_DIR}/mapdump.jar") != built
+    STATE.changed |= jar_changed
+    if jar_changed:
+        adb_ok("push", str(jar), "/data/local/tmp/mapdump.jar")
+        su_ok(
+            f"mkdir -p {MAP_DIR}\n"
+            f"cp /data/local/tmp/mapdump.jar {MAP_DIR}/mapdump.jar\n"
+            "rm -f /data/local/tmp/mapdump.jar"
+        )
+    listing = su(f"ls -ldn {MAP_DIR} {MAP_DIR}/mapdump.jar")[1]
+    found = {entry for shape in LS_LINES for entry in shape.findall(listing)}
+    if found != {("drwxr-xr-x", "32051", "32051"), ("-rw-r--r--", "32051", "32051")}:
+        STATE.changed = True
     su_ok(
-        f"mkdir -p {MAP_DIR}\n"
-        f"cp /data/local/tmp/mapdump.jar {MAP_DIR}/mapdump.jar\n"
         f"chown -R 32051.32051 {MAP_DIR}\n"
         f"chmod 755 {MAP_DIR}\n"
-        f"chmod 644 {MAP_DIR}/mapdump.jar\n"
-        "rm -f /data/local/tmp/mapdump.jar"
+        f"chmod 644 {MAP_DIR}/mapdump.jar"
     )
-    built = md5(jar)
     installed = remote_md5(f"{MAP_DIR}/mapdump.jar")
     if installed != built:
         fail("mapdump.jar", f"The device has {installed or 'no hash'}, built {built}.")
@@ -463,7 +526,10 @@ def install_mapdump() -> None:
             " app_process would answer ClassNotFoundException on an empty"
             " DexPathList.",
         )
-    ok("mapdump.jar", f"md5 {built}; Alexa commands on")
+    if jar_changed:
+        ok("mapdump.jar", f"md5 {built}; Alexa commands on")
+    else:
+        ok("mapdump.jar", f"unchanged, md5 {built}")
 
 
 def interrupted(signum: int, _frame: object) -> NoReturn:
@@ -508,8 +574,15 @@ def main() -> None:
     install_boot_script(boot_script)
     restart(name)
     print()
-    print("Installed. Home Assistant must be able to reach this device on tcp/6053;")
-    print("README.md says how.")
+    if STATE.changed:
+        print(
+            "Installed. Home Assistant must be able to reach this device on tcp/6053;"
+        )
+        print("README.md says how.")
+    elif STATE.warned:
+        print("Nothing changed; see the warning above.")
+    else:
+        print("Already installed; nothing changed.")
 
 
 def mark(kind: str) -> str:
@@ -573,6 +646,26 @@ def remove_stage() -> None:
         )
 
 
+def report_name(*, done: str, name: str, pid: str) -> None:
+    code, running = su(f"cat /proc/{pid}/cmdline")
+    running = running.replace("\0", " ").strip() if code == 0 else ""
+    if not running:
+        warn(
+            "daemon",
+            f"Running as pid {pid}, but /proc/{pid}/cmdline was unreadable, so the"
+            " running -name is unverified. Reboot if you changed it.",
+        )
+    elif not (running + " ").count(f"-name {name} "):
+        warn(
+            "daemon",
+            f"REBOOT REQUIRED: pid {pid} runs as `{running}`, not with -name {name}."
+            " The supervisor is a shell loop holding the arguments it was started"
+            " with, so it respawns the old ones. Only a reboot applies the new name.",
+        )
+    else:
+        ok("daemon", done)
+
+
 def restart(name: str) -> None:
     old = overdub_pid()
     if old is None:
@@ -583,6 +676,11 @@ def restart(name: str) -> None:
             "Not running. Reboot to start it, or run it by hand to test first.",
         )
         return
+    stamp = su(f"cat {APPLIED} 2>/dev/null")[1].split("\n")
+    if applied(old) in stamp:
+        report_name(done=f"running as -name {name}, pid {old}", name=name, pid=old)
+        return
+    STATE.changed = True
     pending(detail=f"restarting pid {old}", label="daemon")
     su(f"kill {old}")
     time.sleep(8)
@@ -599,23 +697,10 @@ def restart(name: str) -> None:
     if new == old:
         warn("daemon", f"Did not restart (still pid {new}).")
         return
-    code, running = su(f"cat /proc/{new}/cmdline")
-    running = running.replace("\0", " ").strip() if code == 0 else ""
-    if not running:
-        warn(
-            "daemon",
-            f"Restarted as pid {new}, but /proc/{new}/cmdline was unreadable, so the"
-            " running -name is unverified. Reboot if you changed it.",
-        )
-    elif not (running + " ").count(f"-name {name} "):
-        warn(
-            "daemon",
-            f"REBOOT REQUIRED: pid {new} runs as `{running}`, not with -name {name}."
-            " The supervisor is a shell loop holding the arguments it was started"
-            " with, so it respawns the old ones. Only a reboot applies the new name.",
-        )
-    else:
-        ok("daemon", f"restarted as -name {name}, pid {old} -> {new}")
+    su_ok(f"umask 077; echo '{applied(new)}' > {APPLIED}")
+    report_name(
+        done=f"restarted as -name {name}, pid {old} -> {new}", name=name, pid=new
+    )
 
 
 def serial_number() -> str:
@@ -710,6 +795,7 @@ def usage(message: str) -> NoReturn:
 
 
 def warn(label: str, *lines: str) -> None:
+    STATE.warned = True
     show(*lines, label=label, sign=mark("warn"))
 
 
