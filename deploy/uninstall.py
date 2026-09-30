@@ -32,8 +32,8 @@ SENDFLAG = "persist.overdub.sendspin"
 SENDKEY = "/data/local/bin/.overdub-sendspin-key"
 SENDSPIN_PORT = 8928
 STAGE = "/data/local/tmp/overdub-install"
-STATE = argparse.Namespace(pending=False)
-SWEPT = [BOOT, BIN, BIN + ".new", KEY, SENDKEY, APPLIED, STAGE, MAP, LOG]
+STATE = argparse.Namespace(changed=False, pending=False, warned=False)
+SWEPT = [BOOT, BIN, BIN + ".new", KEY, SENDKEY, ADBKEY, APPLIED, STAGE, MAP, LOG]
 
 
 def adb(*args: str) -> tuple[int, str]:
@@ -54,7 +54,7 @@ def fail(label: str, *lines: str) -> NoReturn:
     sys.exit(1)
 
 
-def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -82,6 +82,14 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         fail("root", "su -c id did not report uid=0.")
     ok("root", "su works")
 
+    before = present()
+    if before is None:
+        fail("files", "Could not read the device, so nothing was changed.")
+    pid = overdub_pid()
+    if pid is None:
+        fail("daemon", "adb went away before the kill.")
+    STATE.changed = bool(before or pid)
+
     su(f"rm -f {BOOT}")
     su(
         f"rm -f {BIN} {BIN}.new {KEY} {SENDKEY} {SENDKEY}.new-* {ADBKEY} {APPLIED}\n"
@@ -89,34 +97,23 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         "rm -f /data/local/tmp/overdub /data/local/tmp/s.sh"
     )
 
-    pid = overdub_pid()
-    if pid is None:
-        fail("daemon", "adb went away before the kill.")
     if pid:
         pending(detail=f"stopping pid {pid}", label="daemon")
         su(f"kill {pid}")
         time.sleep(8)
 
     su(f"rm -f {LOG}\nrmdir /data/local/bin 2>/dev/null\ntrue")
-    pending(detail="waiting for the supervisor's next cycle", label="files")
-    time.sleep(6)
+    if STATE.changed:
+        pending(detail="waiting for the supervisor's next cycle", label="files")
+        time.sleep(6)
 
-    code, answer = su(
-        f"for path in {' '.join(SWEPT)} {SENDKEY}.new-*; do\n"
-        '  [ -e "$path" ] && echo "$path"\n'
-        "done\n"
-        "echo swept"
-    )
-    answer = answer.split("\n")
-    if "swept" not in answer:
+    left = present()
+    if left is None:
         fail(
             "files",
             "Could not read the device back, so nothing here is confirmed removed."
             " Run this again with the Dot connected.",
         )
-    left = [
-        line for line in answer if line in SWEPT or line.startswith(SENDKEY + ".new-")
-    ]
 
     for path in left:
         if path == LOG:
@@ -136,7 +133,12 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                 stream=sys.stderr,
             )
     if not left:
-        ok("files", "binary, keys, boot script and mapdump.jar removed")
+        ok(
+            "files",
+            "removed " + ", ".join(path.rsplit("/", 1)[1] for path in before)
+            if before
+            else "none installed",
+        )
 
     still = overdub_pid()
     if still is None:
@@ -168,11 +170,12 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
     closed = []
     for port in (API_PORT, SENDSPIN_PORT):
         rule = f"-i wlan0 -p tcp --dport {port} -j ACCEPT"
-        su(
+        deleted = su(
             f"while iptables -w -C INPUT {rule} 2>/dev/null; do\n"
             f"  iptables -w -D INPUT {rule} || break\n"
+            "  echo deleted\n"
             "done"
-        )
+        )[1].split("\n")
         answer = su(f"iptables -L INPUT -n | grep {port}; echo checked")[1].split("\n")
         found = [line for line in answer if f"dpt:{port}" in line]
         if "checked" not in answer:
@@ -185,18 +188,23 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                 "Nothing listens behind it now. It lives in the chain rather than on"
                 " disk, so a reboot clears it.",
             )
-        else:
+        elif "deleted" in deleted:
             closed.append(f"tcp/{port}")
+        STATE.changed |= "deleted" in deleted
     if closed:
         ok("firewall", " and ".join(closed) + " closed")
+    elif not STATE.warned:
+        ok("firewall", "no overdub rules open")
 
-    su(
+    cleared = su(
         "for f in /data/property/persist.overdub.*; do\n"
         '  [ -e "$f" ] || continue\n'
         '  setprop "${f##*/}" ""\n'
         '  rm -f "$f"\n'
+        '  [ -e "$f" ] || echo cleared\n'
         "done"
-    )
+    )[1].split("\n")
+    STATE.changed |= "cleared" in cleared
     answer = su(f"getprop {SENDFLAG}; echo checked")[1].split("\n")
     value = [line for line in answer if line not in {"checked", ""}]
     if "checked" not in answer:
@@ -208,7 +216,19 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             " future install starts Sendspin switched on.",
         )
     else:
-        ok("settings", "persist.overdub.* cleared")
+        ok(
+            "settings",
+            "persist.overdub.* cleared" if "cleared" in cleared else "none set",
+        )
+
+    if not STATE.changed:
+        print()
+        print(
+            "Nothing removed; see the warning above."
+            if STATE.warned
+            else "Already uninstalled; nothing to remove."
+        )
+        return
 
     for paragraph in (
         (
@@ -268,6 +288,20 @@ def pending(*, detail: str, label: str) -> None:
         STATE.pending = True
 
 
+def present() -> list[str] | None:
+    answer = su(
+        f"for path in {' '.join(SWEPT)} {SENDKEY}.new-*; do\n"
+        '  [ -e "$path" ] && echo "$path"\n'
+        "done\n"
+        "echo swept"
+    )[1].split("\n")
+    if "swept" not in answer:
+        return None
+    return [
+        line for line in answer if line in SWEPT or line.startswith(SENDKEY + ".new-")
+    ]
+
+
 def show(*lines: str, label: str, sign: str, stream: TextIO = sys.stdout) -> None:
     if STATE.pending:
         sys.stdout.write("\r" + " " * 79 + "\r")
@@ -291,6 +325,7 @@ def su(command: str) -> tuple[int, str]:
 
 
 def warn(label: str, *lines: str) -> None:
+    STATE.warned = True
     show(*lines, label=label, sign=mark("warn"))
 
 

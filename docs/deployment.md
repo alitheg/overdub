@@ -149,8 +149,18 @@
   The Sendspin key's temporary siblings match by prefix, because a run killed
   between the write and the link leaves one under a random suffix.
 - A path swept but not filtered is dropped silently and reported as removed. So
-  every path in the sweep must also be in the filter. The adb key and the two
-  staging files are not swept, and are removed without being verified.
+  every path in the sweep must also be in the filter. The two staging files
+  are not swept, and are removed without being verified.
+- The same sweep runs first. With nothing swept present and no daemon, there
+  is no supervisor to wait out, so the 6-second wait is skipped. A firewall
+  rule deleted or a property cleared still counts as a removal, so a Dot
+  left with only those ends `Overdub uninstalled.` with its notes.
+  Otherwise the run ends `Already uninstalled; nothing to remove.`, or
+  `Nothing removed; see the warning above.` when it warned.
+- A run that stops at STILL SUPERVISED exits before the notes. The reboot
+  that ends the loop leaves nothing, so the next run ends `Already
+  uninstalled` and the notes are never printed. README.md's Uninstall section
+  says the same.
 - The filter is an allowlist, not "anything echoed", because `adb` merges
   stderr into stdout and a linker warning from `su` would read as a leftover.
 - The ports are Go constants (`apiPort`, `sendspin.Port`), which Python cannot

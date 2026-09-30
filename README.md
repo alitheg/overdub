@@ -371,6 +371,11 @@ deploy/uninstall.py
 - The Sendspin identity matters as much as the API key: the pairing token
   derives from it, so a copy left behind stays valid.
 - Amazon's stack is untouched. Delete the device in Home Assistant when done.
+- A later install generates a new API key. `/data/misc/adb/adb_keys` stays:
+  adbd reads it only while `ro.adb.secure` is 1, which nothing sets after an
+  uninstall.
+- Running it again is safe. With nothing left it ends `Already uninstalled;
+  nothing to remove.`
 
 ## Home Assistant
 
