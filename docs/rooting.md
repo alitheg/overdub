@@ -31,7 +31,7 @@ stops when the Dot is rooted.
   stage.
 - Rooting formats userdata. A registered Dot loses its Wi-Fi and its Alexa
   registration, and finishes in setup mode.
-- After `fastboot erase boot0` the Dot shows up only as the bootrom's serial
+- After boot0 is erased the Dot shows up only as the bootrom's serial
   port, which no probe sees. So the script creates `boot0-erased` in its cache
   before the erase. It deletes the file once amonet logs `Reboot to unlocked
   fastboot`, when boot0 is written, and whenever it sees the Dot in any state.
@@ -63,12 +63,26 @@ stops when the Dot is rooted.
   commands.
 - The delay goes only between stages, because timing inside one matters. The
   fastbrick relies on an 8-second timeout, and amonet v1.1.0's bootrom step
-  starts before `fastboot erase boot0` and has 60 seconds to find the port.
-- In verbose mode a stage prints a line when it starts and when it ends, with
-  no running count.
+  starts before boot0 is erased and has 60 seconds to find the port.
+- In verbose mode, or when the output is not a terminal, a stage prints a line
+  when it starts and when it ends, with no running count. Output that is not
+  a terminal also gets no download meter. Either would fill a log with `\r`
+  frames.
+- A running stage shows a Braille spinner where its mark will go, and a
+  finished stage prints ✅. Where the output's encoding cannot represent them,
+  the spinner is `|/-\` and the mark is `done`. On Windows that is output
+  redirected to a file: since Python 3.6 a console reports UTF-8 whatever its
+  code page.
+- A finished line is at most 79 columns, so it does not wrap on an 80-column
+  terminal. That caps a stage label at 36 characters.
+- Each stage is numbered by its place in a root from stock, `[ 1/10]` to
+  `[10/10]`. A run that starts part way starts part way through the count. The
+  resume after a stopped bootrom step shows both of its stages as `[ 3/10]`,
+  the downgrade they finish.
 - Each stage's estimate is an upper bound: the slowest time measured for it,
-  rounded up to the next 5 seconds. The measurements are five roots on macOS
-  and Windows.
+  rounded up to the next 5 seconds, over roots on macOS and Windows 11. One
+  case is left out: a first run on a computer that finds the Dot already in
+  v1.1.0's TWRP waits up to 35 s more for the system image.
 
 The ring during `dot_restore_stock.py 6302`, from a rooted Dot not set up:
 
@@ -130,12 +144,30 @@ ring read white.
 - Downloads go to `$XDG_CACHE_HOME/overdub-root` (default
   `~/.cache/overdub-root`), or `%LOCALAPPDATA%\overdub-root` on Windows. Each
   is checked against a pinned SHA-256 before use and on every run. The amonet
-  trees unpacked from the two zips are not.
-- Once it sees a Dot that needs work, and before it changes it, `dot_root.py`
-  downloads and checks every file: about 476 MB, 885 MB unpacked. A bad
-  download then stops the run with the Dot unchanged. A rooted Dot needs no
+  trees unpacked from the two zips are not, and neither is the system image
+  built from Fire OS's.
+- The system image's folder is named after the zip's hash, so a new zip builds
+  a new image. Its `md5` file is written last and synced with the image before
+  the folder is renamed into place, so the script trusts a folder only when
+  `md5` is in it, and rebuilds otherwise. If the md5 read back still fails
+  after the last try, the script deletes `md5` alone, which works even when
+  another process holds the image open.
+- `dot_root.py` starts the downloads in a background thread at the first probe
+  that does not find the Dot booted, rooted or starting. So they overlap the
+  wait for a Dot and for the fastboot gesture. A Dot found rooted needs no
   download.
-- Nothing deletes the cache, so a later run downloads nothing. A rooted run
+- The main thread waits for that thread's locks half a second at a time.
+  On Windows, Ctrl-C does not interrupt a blocking lock wait, so one long wait
+  would ignore it until a 397 MB download ended.
+- The downloads are about 476 MB. With the unpacked trees and the system
+  image, the cache holds about 1.3 GB.
+- Before it changes the Dot, the script waits for every download and checks
+  it. A bad download then stops the run with the Dot unchanged.
+- The downloads run one at a time, amonet v2.0.0's zip first, because the
+  fastbrick needs it first. Fire OS is 397 MB of the 476, and one download
+  filled the line at about 40 MB/s, so parallel downloads would only delay
+  that zip.
+- Nothing deletes a download, so a later run downloads nothing. A rooted run
   prints the cache's path and size and says it is safe to delete.
 - amonet v1.1.0's bootrom step needs pyserial. The script puts the pinned pure
   wheel from PyPI on the child's `PYTHONPATH`, and Python imports it straight
@@ -207,11 +239,16 @@ ring read white.
 - v1.1.0's `modules/main.py` must start **before** the Dot reboots: it records
   the serial ports that exist, then waits for a new one. The erase runs only
   if main.py is still running 3 seconds after it starts.
-- From v2's TWRP the script reboots to fastboot first, and stops there if
-  `lk_build_desc` is already v1.1.0's: a second erase gains nothing.
-- Then `fastboot erase boot0` and `fastboot reboot` drop the Dot into its
-  bootrom. The script feeds main.py the newlines its prompts read, and is done
-  when main.py logs `Reboot to unlocked fastboot`.
+- The script stops if `lk_build_desc` is already v1.1.0's: a second erase
+  gains nothing. In v2's fastboot it reads `getvar`, and in v2's TWRP
+  `ro.boot.lk_build_desc`.
+- From v2's TWRP it clears boot0's 4 KiB header there, the way
+  `dot_restore_stock.py` does, reads it back as zeros, and runs `adb reboot`.
+  This saves the 11 s reboot into fastboot. From v2's fastboot it runs
+  `fastboot erase boot0` and `fastboot reboot`. Either way the Dot drops into
+  its bootrom.
+- The script feeds main.py the newlines its prompts read, and is done when
+  main.py logs `Reboot to unlocked fastboot`.
 - The bootrom is `0e8d:0003`. On macOS it is `/dev/cu.usbmodem*`. On Linux it
   is `/dev/ttyACM*`, owned by `dialout` unless the udev `tty` line gives it to
   `plugdev`, and ModemManager can grab it first. On Windows it is a COM port
@@ -257,10 +294,40 @@ ring read white.
   `mke2fs -t ext4 -b 4096 <userdata> <blocks - 256>`, which leaves 1 MiB for
   the crypto footer. busybox's fstab has no type, so the mount is
   `mount -t ext4 <dev> /data`.
-- `/data` is then checked as a mountpoint. Otherwise the 397 MB Fire OS push
-  lands in TWRP's RAM, TWRP dies, and the Dot reboots.
+- `/data` is then checked as a mountpoint. Otherwise Magisk's database lands
+  in TWRP's RAM and is gone after the reboot.
+- TWRP runs one core at 600 MHz, and adbd is bound by it: USB moved
+  5.1 MB/s. With cpu0's governor set to `performance` (1.3 GHz) it moved
+  7.0 MB/s. The other 3 cores made no difference. So the userdata script sets
+  the governor first.
 - Never `umount -a` in TWRP: it unmounts `/proc`.
 - Every image, zip and database push is read back by md5 on the device.
+- amonet v2.0.0's TWRP 3.7.0 moves 11.9 MB/s, but v1.1.0's LK cannot start
+  it. Its kernel is 32-bit ARM (`bootopt` ends `32N2`), and v1.1.0's chain
+  starts a 64-bit one. Flashed to `recovery`, it left the Dot without USB for
+  60 seconds until the watchdog reset it into Fire OS.
+
+## Writing Fire OS
+
+- The OTA zip's installer does 2 writes that matter: `system.new.dat` to
+  `other-system` and `boot.img` to `other-boot`. Its LK write goes nowhere:
+  amonet's TWRP links `other-lk` to `/dev/null`. Its TEE and preloader are byte
+  for byte the ones v1.1.0 already wrote to `tee1` and boot0. Its last write,
+  `target.blocklist` to `/cache/recovery/last_blocklist`, is skipped: it is a
+  file in `/cache`, not a partition the Dot boots from.
+- So the zip never goes to the Dot. The host builds the partition image from
+  `system.transfer.list` once, into the cache: 805 MB, 386 MB gzipped. It
+  takes 22 s on macOS and 31 s on Windows 11, in a background thread, while
+  the Dot unlocks and downgrades.
+- The built image matched `system_a` after a `twrp install` in every MiB that
+  the root's own edits and ext4's mount metadata leave alone.
+- `adb exec-in` streams the gzip into `gunzip | dd` on the Dot, so the
+  transfer, the unpacking and the eMMC writes overlap: 65 s on macOS and 76 s
+  on Windows 11, against 80 s for the zip's push and 134 s for its install. `adb push` cannot feed a pipe: it
+  replaces the target with a regular file.
+- `exec-in` returns up to 10 seconds before `dd` ends. So `dd` writes its exit
+  status to a file, the script waits for it, and then reads the partition back
+  by md5, which takes 12 s.
 
 ## The boot image
 
@@ -275,6 +342,9 @@ ring read white.
 - The patched image is padded to a 4096-byte multiple and written with `dd`.
   After `sync` the page cache is dropped, and the partition is read back by
   md5 over the image's length.
+- The host's copies go in a folder under the cache, not in `%TEMP%`. On
+  Windows 11, reading a newly written boot image from `%TEMP%` stalled for
+  10.3 s in 10 of 15 trials, and in 0 of 23 trials elsewhere.
 
 ## /system
 
@@ -286,7 +356,8 @@ ring read white.
 
 ## Magisk
 
-- Magisk 17.3 installs through `twrp install`, checked the same way as Fire OS.
+- Magisk 17.3 installs through `twrp install`, checked against
+  `/tmp/recovery.log` as above.
 - Its database is seeded so the adb shell gets root without a prompt the Dot
   cannot show: `/data/adb/magisk.db`, mode 600, with
   `policies(uid INT, package_name TEXT, policy INT, until INT, logging INT,

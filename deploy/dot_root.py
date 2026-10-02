@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import gzip
 import hashlib
 import http.client
 import os
@@ -28,7 +29,10 @@ import threading
 import time
 import urllib.request
 import zipfile
-from typing import BinaryIO, NoReturn, TextIO
+from typing import IO, TYPE_CHECKING, BinaryIO, NoReturn, TextIO
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 AMONET_V1 = "amonet-biscuit-v1.1.0.zip"
 AMONET_V1_SHA = "bd4d3a18b6b6e9ff6e49a4739159a81020673202795cb3959f7c9ff24351b663"
@@ -94,7 +98,7 @@ BOOT_SH = """\
 set -e
 mountpoint -q /system || mount /system
 rm -rf /tmp/bp; mkdir /tmp/bp; cd /tmp/bp; chmod 755 /tmp/magiskboot
-dd if=/dev/block/other-boot of=boot.img bs=1048576 2>/dev/null
+mv /tmp/boot.img boot.img
 LD_LIBRARY_PATH=/system/lib /tmp/magiskboot --unpack boot.img >/dev/null 2>&1
 mkdir r; cd r; cpio -id < ../ramdisk.cpio 2>/dev/null
 for f in fstab*; do sed -i 's/,verify//g; s/verify,//g' "$f"; done
@@ -105,9 +109,20 @@ LD_LIBRARY_PATH=/system/lib /tmp/magiskboot --repack boot.img new.img >/dev/null
 cd /; umount /system
 echo root-step-ok
 """
+CLEAR_BOOT0 = (
+    "d=dd; toybox dd --help >/dev/null 2>&1 && d='toybox dd'; "
+    "echo 0 > /sys/block/mmcblk0boot0/force_ro; "
+    "$d if=/dev/zero of=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null; "
+    "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
+    "echo 3 > /proc/sys/vm/drop_caches; "
+    'echo "$($d if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null | wc -c)'
+    " $($d if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null"
+    " | tr -d '\\0' | wc -c)\""
+)
 CMDLINE_SIZE = 512
 DATA_SH = """\
 set -e
+echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor || true
 umount /data /sdcard 2>/dev/null || true
 d=/dev/block/platform/mtk-msdc.0/by-name/userdata
 mke2fs -q -t ext4 -b 4096 "$d" $(( $(blockdev --getsize64 "$d") / 4096 - 256 ))
@@ -161,6 +176,10 @@ Then run it again with the new group, which a new login also has:
 """  # ruff: ignore[line-too-long]
 PUSH_TRIES = 3
 PYSERIAL = "pyserial-3.5-py2.py3-none-any.whl"
+LOCKS = {
+    name: threading.Lock()
+    for name in (AMONET_V1, AMONET_V2, FIREOS, MAGISK, PYSERIAL, "v1", "v2")
+}
 PYSERIAL_SHA = "c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0"
 
 PYSERIAL_URL = (
@@ -181,14 +200,20 @@ for port in list_ports.comports():
         except serial.SerialException:
             pass
 """
-UPDATER = "com.amazon.device.software.ota"
+SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+STEPS = 10
+SYSTEM = "/dev/block/other-system"
 
+SYSTEM_LOCK = threading.Lock()
+UPDATER = "com.amazon.device.software.ota"
 UPDATE_HOSTS = (
     "updates.amazon.com",
     "softwareupdates.amazon.com",
     "amzndigitaldownloads.edgesuite.net",
     "amzdigital-a.akamaihd.com",
 )
+
+
 SYSTEM_SH = """\
 set -e
 mountpoint -q /system || mount /system
@@ -203,9 +228,10 @@ grep -q '^ *unset_adb_persistent_property$' "$f" && exit 1
 sync; umount /system
 echo root-step-ok
 """.format(" ".join(UPDATE_HOSTS))
-
-
 USER_SERIAL = os.environ.get("ANDROID_SERIAL")
+
+
+VERIFIED: set[pathlib.Path] = set()
 
 
 WAIT = 600
@@ -220,14 +246,14 @@ class Progress:
         self.stopped = threading.Event()
         self.ticker = None
 
-    def begin(self, *, estimate: str = "", label: str) -> None:
+    def begin(self, *, estimate: str = "", label: str, step: int) -> None:
         self.end()
         about = f"(~{estimate})" if estimate else ""
-        self.line = f"{label:<44} {about:<10} ... "
-        delay(label)
+        self.line = f"[{step:2d}/{STEPS}] {label:<36} {about:<8} "
+        delay(f"[{step:2d}/{STEPS}] {label}")
         self.ts = time.monotonic()
         self.open = True
-        if ARGS.verbose:
+        if ARGS.verbose or not sys.stdout.isatty():
             show(text=self.line.rstrip())
         else:
             self.start()
@@ -237,7 +263,8 @@ class Progress:
             return
         self.open = False
         back = "\r" if self.halt() else ""
-        show(text=f"{back}{self.line}done in {self.seconds()}, {since(self.t0)} total")
+        total = f"({since(self.t0)} total)"
+        show(text=f"{back}{self.line}{mark()} {self.seconds()} {total:>15}")
 
     def halt(self) -> bool:
         if not self.ticker:
@@ -249,7 +276,8 @@ class Progress:
 
     def note(self, message: str) -> None:
         running = self.halt()
-        print()
+        if running:
+            print()
         warn(message)
         if running:
             self.start()
@@ -264,8 +292,17 @@ class Progress:
         self.ticker.start()
 
     def tick(self) -> None:
-        while not self.stopped.wait(1):
-            show(end="", flush=True, text=f"\r{self.line}{self.seconds()}")
+        width = 2 if mark() == "✅" else len(mark())
+        frames = SPINNER if mark() == "✅" else "|/-\\"
+        count = 0
+        while not self.stopped.wait(0.1):
+            frame = frames[count % len(frames)]
+            show(
+                end="",
+                flush=True,
+                text=f"\r{self.line}{frame:<{width}} {self.seconds()}",
+            )
+            count += 1
 
 
 def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
@@ -283,7 +320,11 @@ def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
 
 
 def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
-    *, amonet: pathlib.Path, erase: bool, payload: pathlib.Path, wheel: pathlib.Path
+    *,
+    amonet: pathlib.Path,
+    erase: Callable[[], str] | None,
+    payload: pathlib.Path,
+    wheel: pathlib.Path,
 ) -> None:
     shutil.copyfile(payload, amonet / "brom-payload" / "build" / "payload.bin")
     log_path = CACHE / "bootrom.log"
@@ -320,17 +361,18 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             _die(message=f"v1.1.0's bootrom step did not start; see {log_path}")
         if erase:
             ERASED.touch()
-            for args in (["fastboot", "erase", "boot0"], ["fastboot", "reboot"]):
-                try:
-                    result = run(args=args, timeout=60)
-                except subprocess.TimeoutExpired:
-                    brom.kill()
-                    raise
-                if result.returncode != 0:
-                    brom.kill()
-                    _die(message=f"{' '.join(args)} failed:\n{result.stdout}")
+            try:
+                failure = erase()
+            except subprocess.TimeoutExpired:
+                brom.kill()
+                raise
+            if failure:
+                brom.kill()
+                _die(message=failure)
         else:
-            PROGRESS.begin(estimate="40 s", label="waiting for the Dot to restart")
+            PROGRESS.begin(
+                estimate="40 s", label="waiting for the Dot to restart", step=3
+            )
         deadline = time.monotonic() + (60 if erase else 600)
         while brom.poll() is None and time.monotonic() < deadline:
             if "Found port" in log_path.read_text(errors="replace"):
@@ -345,7 +387,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                 )
         if not erase:
             PROGRESS.begin(
-                estimate="30 s", label="finishing the downgrade to amonet v1.1.0"
+                estimate="30 s", label="finishing the downgrade to v1.1.0", step=3
             )
         try:
             brom.wait(timeout=1800)
@@ -366,6 +408,33 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
         time.sleep(2)
     else:
         _die(message="the Dot did not come back in v1.1.0's fastboot")
+
+
+def build_system(target: pathlib.Path) -> None:
+    part = CACHE / "system.part"
+    shutil.rmtree(part, ignore_errors=True)
+    part.mkdir()
+    digest = hashlib.md5(usedforsecurity=False)
+    fireos = fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
+    with zipfile.ZipFile(fireos) as z:
+        words = z.read("system.transfer.list").decode().split()
+        commands = dict(zip(words[4::2], words[5::2]))
+        if words[0] != "3" or set(commands) != {"erase", "new"}:
+            _die(message=f"{FIREOS} has a transfer list this does not read")
+        blocks = int(commands["erase"].split(",")[-1])
+        bounds = [int(n) for n in commands["new"].split(",")[1:]]
+        ranges = [*zip(bounds[::2], bounds[1::2]), (blocks, blocks)]
+        image = part / "system.img.gz"
+        with z.open("system.new.dat") as dat:  # ruff: ignore[multiple-with-statements]
+            with gzip.open(image, "wb", compresslevel=6) as out:
+                for chunk in system_chunks(dat=dat, ranges=ranges):
+                    digest.update(chunk)
+                    out.write(chunk)
+    (part / "md5").write_text(f"{digest.hexdigest()} {blocks}\n")
+    for path in part.iterdir():
+        with path.open("rb+") as f:
+            os.fsync(f.fileno())
+    part.replace(target)
 
 
 def cache_dir() -> pathlib.Path:
@@ -389,8 +458,8 @@ def cache_note() -> None:
         if os.name != "nt" and path.startswith(home + os.sep):
             path = "~" + path[len(home) :]
         show(
-            text=f"{path} holds {size // 1000000} MB of downloads for the next run."
-            " It is safe to delete."
+            text=f"{path} holds {size // 1000000} MB of downloads and images for"
+            " the next run. It is safe to delete."
         )
 
 
@@ -470,23 +539,14 @@ def downgrade(*, from_twrp: bool) -> None:
     )
     wheel = fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA)
     if from_twrp:
-        say(text="Restarting the Dot into fastboot mode. Waiting for it to start.")
-        run(args=["adb", "reboot", "bootloader"], check=True)
-        for _ in range(30):
-            try:
-                if in_fastboot():
-                    break
-            except subprocess.TimeoutExpired:
-                pass
-            time.sleep(2)
-        else:
-            _die(message="the Dot did not reach fastboot within 60 seconds")
-    if getvar("unlock_status").lower() != "true":
-        _die(message="not in amonet's fastboot")
-    lk = getvar("lk_build_desc")
+        lk = rshell(command="getprop ro.boot.lk_build_desc", timeout=30)
+    else:
+        if getvar("unlock_status").lower() != "true":
+            _die(message="not in amonet's fastboot")
+        lk = getvar("lk_build_desc")
     if not lk:
         _die(
-            message="fastboot did not report the bootloader version;"
+            message="the Dot did not report its bootloader version;"
             " boot0 was not erased. Run dot_root.py again."
         )
     if lk == LK_V1:
@@ -494,9 +554,33 @@ def downgrade(*, from_twrp: bool) -> None:
             message="the Dot already runs amonet v1.1.0's bootloader."
             " Run dot_root.py again."
         )
-    PROGRESS.begin(estimate="40 s", label="downgrading to amonet v1.1.0; LED ring off")
-    bootrom(amonet=amonet, erase=True, payload=v2_payload(), wheel=wheel)
+    PROGRESS.begin(estimate="45 s", label="downgrading to amonet v1.1.0", step=3)
+    bootrom(
+        amonet=amonet,
+        erase=erase_from_twrp if from_twrp else erase_by_fastboot,
+        payload=v2_payload(),
+        wheel=wheel,
+    )
     v1_recovery()
+
+
+def erase_by_fastboot() -> str:
+    for args in (["fastboot", "erase", "boot0"], ["fastboot", "reboot"]):
+        result = run(args=args, timeout=60)
+        if result.returncode != 0:
+            return f"{' '.join(args)} failed:\n{result.stdout}"
+    return ""
+
+
+def erase_from_twrp() -> str:
+    answer = rshell(command=CLEAR_BOOT0, timeout=60).split("\n")[-1].split()
+    if answer != ["4096", "0"]:
+        return (
+            "boot0's header did not read back as cleared, so the Dot was not"
+            " restarted. Run dot_root.py again."
+        )
+    run(args=["adb", "reboot"], timeout=60)
+    return ""
 
 
 def fastbrick() -> None:  # ruff: ignore[complex-structure]
@@ -514,7 +598,7 @@ def fastbrick() -> None:  # ruff: ignore[complex-structure]
     image = "bin/fastbrick.img"
     if lk == LK_V2:
         image = "bin/fastbrick-20221007.img"
-    PROGRESS.begin(estimate="10 s", label="unlocking with amonet v2.0.0")
+    PROGRESS.begin(estimate="10 s", label="unlocking with amonet v2.0.0", step=1)
     for attempt in range(10):
         if attempt:
             time.sleep(2)
@@ -533,35 +617,38 @@ def fastbrick() -> None:  # ruff: ignore[complex-structure]
             _die(message="the payload rejected this device; it was not modified")
         if started:
             PROGRESS.begin(
-                estimate="40 s", label="exploit running; waiting for recovery"
+                estimate="40 s", label="waiting for v2.0.0 recovery to start", step=2
             )
             return
     _die(message="the unlock did not start after 10 attempts")
 
 
 def fetch(*, name: str, url: str, want: str) -> pathlib.Path:
-    CACHE.mkdir(exist_ok=True, parents=True)
-    path = CACHE / name
-    if path.is_file() and sha256(path) == want:
+    with hold(LOCKS[name]):
+        CACHE.mkdir(exist_ok=True, parents=True)
+        path = CACHE / name
+        if path in VERIFIED or (path.is_file() and sha256(path) == want):
+            VERIFIED.add(path)
+            return path
+        part = CACHE / (name + ".part")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:  # ruff: ignore[multiple-with-statements]
+                with part.open("wb") as out:
+                    done, total = save(
+                        label="downloading " + name, out=out, response=response
+                    )
+        except (OSError, http.client.HTTPException) as error:
+            _die(message=f"downloading {name} failed: {error!r}")
+        if total and done != total:
+            _die(
+                message=f"downloading {name} stopped after {done} of {total} bytes."
+                " Run dot_root.py again."
+            )
+        if sha256(part) != want:
+            _die(message=f"{name} does not hash to {want}")
+        part.replace(path)
+        VERIFIED.add(path)
         return path
-    part = CACHE / (name + ".part")
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:  # ruff: ignore[multiple-with-statements]
-            with part.open("wb") as out:
-                done, total = save(
-                    label="downloading " + name, out=out, response=response
-                )
-    except (OSError, http.client.HTTPException) as error:
-        _die(message=f"downloading {name} failed: {error!r}")
-    if total and done != total:
-        _die(
-            message=f"downloading {name} stopped after {done} of {total} bytes."
-            " Run dot_root.py again."
-        )
-    if sha256(part) != want:
-        _die(message=f"{name} does not hash to {want}")
-    part.replace(path)
-    return path
 
 
 def getvar(name: str) -> str:
@@ -592,6 +679,16 @@ def hide_updater() -> None:
         )
 
 
+@contextlib.contextmanager
+def hold(lock: threading.Lock) -> Iterator[None]:
+    while not lock.acquire(timeout=0.5):
+        pass
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def in_fastboot() -> bool:
     out = devices(["fastboot", "devices"])
     serials = [
@@ -609,18 +706,21 @@ def in_fastboot() -> bool:
 def install_fireos() -> None:
     fireos = fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
     magisk = fetch(name=MAGISK, url=MAGISK_URL, want=MAGISK_SHA)
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=CACHE) as tmp:
         work = pathlib.Path(tmp)
-        PROGRESS.begin(estimate="5 s", label="formatting userdata")
+        PROGRESS.begin(estimate="5 s", label="formatting userdata", step=5)
         if not rscript(body=DATA_SH, name="data.sh", work=work):
             _die(message="userdata did not format and mount")
-        PROGRESS.begin(estimate="95 s", label="pushing Fire OS 5.5.5.4 (397 MB)")
-        push_checked(local=fireos, remote="/data/fireos.zip")
-        PROGRESS.begin(estimate="2-3 min", label="installing Fire OS 5.5.5.4")
-        twrp_install(name="Fire OS 5.5.5.4", path="/data/fireos.zip")
-        rshell(command="rm -f /data/fireos.zip")
+        PROGRESS.begin(
+            estimate="100 s", label="writing Fire OS 5.5.5.4's /system", step=6
+        )
+        write_system()
 
-        PROGRESS.begin(estimate="40 s", label="patching the boot image")
+        PROGRESS.begin(estimate="20 s", label="patching the boot image", step=7)
+        stock = work / "stock-boot.img"
+        with zipfile.ZipFile(fireos) as z:
+            stock.write_bytes(z.read("boot.img"))
+        push_checked(local=stock, remote=DOT_TMP / "boot.img")
         magiskboot = work / "magiskboot"
         with zipfile.ZipFile(magisk) as z:
             magiskboot.write_bytes(z.read("arm/magiskboot"))
@@ -655,11 +755,11 @@ def install_fireos() -> None:
                 f" {written or 'nothing'}, expected {want}"
             )
 
-        PROGRESS.begin(estimate="5 s", label="patching /system")
+        PROGRESS.begin(estimate="5 s", label="patching /system", step=8)
         if not rscript(body=SYSTEM_SH, name="system.sh", work=work):
             _die(message="patching /system failed")
 
-        PROGRESS.begin(estimate="25 s", label="installing Magisk 17.3")
+        PROGRESS.begin(estimate="25 s", label="installing Magisk 17.3", step=9)
         magisk_zip = DOT_TMP / "magisk.zip"
         push_checked(local=magisk, remote=magisk_zip)
         twrp_install(name="Magisk 17.3", path=magisk_zip)
@@ -668,7 +768,9 @@ def install_fireos() -> None:
         rshell(command="mkdir -p /data/adb; chmod 700 /data/adb")
         push_checked(local=db, remote="/data/adb/magisk.db")
         rshell(command="chmod 600 /data/adb/magisk.db; sync")
-    PROGRESS.begin(estimate="4 min", label="first boot of Fire OS 5")
+    PROGRESS.begin(
+        estimate="4 min", label="waiting for rooted Fire OS 5 to boot", step=10
+    )
     run(args=["adb", "reboot"])
 
 
@@ -724,6 +826,8 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
     deadline = None
     while True:
         current = state()
+        if DOWNLOADER.ident is None and current not in {"booted", "rooted", "starting"}:
+            DOWNLOADER.start()
         if current not in {"none", "starting"}:
             ERASED.unlink(missing_ok=True)
         if current == "none" and ERASED.exists() and "bootrom" not in done:
@@ -742,7 +846,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     url=MIRROR + "/" + AMONET_V1,
                     want=AMONET_V1_SHA,
                 ),
-                erase=False,
+                erase=None,
                 payload=v2_payload(),
                 wheel=fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA),
             )
@@ -815,6 +919,14 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         seen = None
 
 
+def mark() -> str:
+    try:
+        "\u2705".encode(sys.stdout.encoding or "ascii")
+    except (LookupError, UnicodeEncodeError):
+        return "done"
+    return "\u2705"
+
+
 def md5(path: pathlib.Path) -> str:
     digest = hashlib.md5(usedforsecurity=False)
     with path.open("rb") as f:
@@ -864,7 +976,22 @@ def patch_cmdline(path: pathlib.Path) -> None:
     path.write_bytes(data)
 
 
+def prebuild() -> None:
+    with contextlib.suppress(Exception, SystemExit):
+        system_image()
+
+
+def predownload() -> None:
+    with contextlib.suppress(Exception, SystemExit):
+        prefetch()
+
+
+DOWNLOADER = threading.Thread(daemon=True, target=predownload)
+
+
 def prefetch() -> None:
+    if DOWNLOADER.is_alive() and threading.current_thread() is threading.main_thread():
+        show(text="Finishing the downloads.")
     unpack(
         dirname="v2", name=AMONET_V2, url=MIRROR + "/" + AMONET_V2, want=AMONET_V2_SHA
     )
@@ -874,6 +1001,7 @@ def prefetch() -> None:
     fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA)
     fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
     fetch(name=MAGISK, url=MAGISK_URL, want=MAGISK_SHA)
+    threading.Thread(daemon=True, target=prebuild).start()
 
 
 def probe() -> str:  # ruff: ignore[complex-structure, too-many-return-statements, too-many-branches]
@@ -919,15 +1047,7 @@ def probe() -> str:  # ruff: ignore[complex-structure, too-many-return-statement
 def push_checked(*, local: pathlib.Path, remote: str | pathlib.PurePosixPath) -> None:
     for attempt in range(PUSH_TRIES):
         if attempt:
-            PROGRESS.note(
-                f"{remote} did not arrive; waiting for the Dot to reconnect"
-                " to try again."
-            )
-            try:
-                run(args=["adb", "wait-for-recovery"], timeout=120)
-            except subprocess.TimeoutExpired:
-                _die(message="the Dot did not reconnect over USB in recovery")
-            time.sleep(5)
+            reconnect(remote)
         try:  # ruff: ignore[too-many-statements-in-try-clause]
             result = run(args=["adb", "push", local, remote], timeout=600)
             if result.returncode != 0:
@@ -947,6 +1067,17 @@ def push_checked(*, local: pathlib.Path, remote: str | pathlib.PurePosixPath) ->
         message=f"{remote} did not arrive intact after {PUSH_TRIES} tries;"
         f" the last: {said}"
     )
+
+
+def reconnect(remote: str | pathlib.PurePosixPath) -> None:
+    PROGRESS.note(
+        f"{remote} did not arrive; waiting for the Dot to reconnect to try again."
+    )
+    try:
+        run(args=["adb", "wait-for-recovery"], timeout=120)
+    except subprocess.TimeoutExpired:
+        _die(message="the Dot did not reconnect over USB in recovery")
+    time.sleep(5)
 
 
 def rerun() -> str:
@@ -975,6 +1106,7 @@ def run(
     args: list[str | pathlib.PurePath],
     check: bool = False,
     cwd: pathlib.Path | None = None,
+    stdin: BinaryIO | int = subprocess.DEVNULL,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if ARGS.verbose and not ARGS.probing:
@@ -985,7 +1117,7 @@ def run(
         cwd=cwd,
         errors="replace",
         stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
+        stdin=stdin,
         stdout=subprocess.PIPE,
         text=True,
         timeout=timeout,
@@ -1014,12 +1146,18 @@ def save(
     if len(label) > room:
         label = label[: room - 3] + "..."
     done = 0
-    show(end="", flush=True, text=f"{label:<{room}} {meter(0):>{78 - room}}")
+    loud = threading.current_thread() is threading.main_thread() and sys.stdout.isatty()
+    if loud:
+        show(end="", flush=True, text=f"{label:<{room}} {meter(0):>{78 - room}}")
     for block in iter(lambda: response.read(1 << 20), b""):
         out.write(block)
         done += len(block)
-        show(end="", flush=True, text=f"\r{label:<{room}} {meter(done):>{78 - room}}")
-    print()
+        if loud:
+            show(
+                end="", flush=True, text=f"\r{label:<{room}} {meter(done):>{78 - room}}"
+            )
+    if loud:
+        print()
     return done, total
 
 
@@ -1050,7 +1188,7 @@ def since(start: float) -> str:
     seconds = int(time.monotonic() - start)
     if seconds < MINUTE:
         return f"{seconds}s"
-    return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 60}m {seconds % 60:02d}s"
 
 
 def state() -> str:
@@ -1062,6 +1200,30 @@ def state() -> str:
     finally:
         ARGS.probing = False
     return current
+
+
+def system_chunks(*, dat: IO[bytes], ranges: list[tuple[int, int]]) -> Iterator[bytes]:
+    at = 0
+    for start, end in ranges:
+        for offset in range(at * 4096, start * 4096, 1 << 20):
+            yield bytes(min(1 << 20, start * 4096 - offset))
+        for offset in range(start * 4096, end * 4096, 1 << 20):
+            n = min(1 << 20, end * 4096 - offset)
+            chunk = dat.read(n)
+            if len(chunk) != n:
+                _die(message=f"{FIREOS}'s system.new.dat is short")
+            yield chunk
+        at = end
+
+
+def system_image() -> tuple[pathlib.Path, str, int]:
+    target = CACHE / f"system-{FIREOS_SHA[:12]}"
+    with hold(SYSTEM_LOCK):
+        if not (target / "md5").is_file():
+            shutil.rmtree(target, ignore_errors=True)
+            build_system(target)
+    want, blocks = (target / "md5").read_text().split()
+    return target / "system.img.gz", want, int(blocks)
 
 
 def twrp_install(*, name: str, path: str | pathlib.PurePosixPath) -> None:
@@ -1077,15 +1239,16 @@ def twrp_install(*, name: str, path: str | pathlib.PurePosixPath) -> None:
 
 
 def unpack(*, dirname: str, name: str, url: str, want: str) -> pathlib.Path:
-    archive = fetch(name=name, url=url, want=want)
-    target = CACHE / dirname
-    if not target.is_dir():
-        part = CACHE / (dirname + ".part")
-        shutil.rmtree(part, ignore_errors=True)
-        with zipfile.ZipFile(archive) as z:
-            z.extractall(part)
-        part.replace(target)
-    return target / "amonet"
+    with hold(LOCKS[dirname]):
+        archive = fetch(name=name, url=url, want=want)
+        target = CACHE / dirname
+        if not target.is_dir():
+            part = CACHE / (dirname + ".part")
+            shutil.rmtree(part, ignore_errors=True)
+            with zipfile.ZipFile(archive) as z:
+                z.extractall(part)
+            part.replace(target)
+        return target / "amonet"
 
 
 def usb_serial() -> str | None:
@@ -1116,7 +1279,9 @@ def v1_recovery() -> None:
     amonet = unpack(
         dirname="v1", name=AMONET_V1, url=MIRROR + "/" + AMONET_V1, want=AMONET_V1_SHA
     )
-    PROGRESS.begin(estimate="30 s", label="waiting for v1.1.0 recovery to start")
+    PROGRESS.begin(
+        estimate="30 s", label="waiting for v1.1.0 recovery to start", step=4
+    )
     run(
         args=["fastboot", "-S", "256M", "flash", "tee2", "bin/tz.img"],
         check=True,
@@ -1144,6 +1309,60 @@ def warn(text: str) -> None:
 
 
 PROGRESS = Progress()
+
+
+def write_system() -> None:  # ruff: ignore[complex-structure]
+    image, want, blocks = system_image()
+    status = DOT_TMP / "system-status"
+    ready = rshell(
+        command=f"umount /system 2>/dev/null; rm -f {status};"
+        f" [ -b {SYSTEM} ] && ! mountpoint -q /system && echo ready"
+    )
+    if ready.split("\n")[-1] != "ready":
+        _die(message=f"{SYSTEM} is not a block device, or /system stayed mounted")
+    stream = f"gunzip -c | dd of={SYSTEM} bs=1048576 2>/dev/null; echo $? > {status}"
+    read_back = (
+        "sync; echo 3 > /proc/sys/vm/drop_caches;"
+        f" dd if={SYSTEM} bs=4096 count={blocks} 2>/dev/null | md5sum"
+    )
+    for attempt in range(PUSH_TRIES):
+        if attempt:
+            reconnect(SYSTEM)
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            rshell(command=f"rm -f {status}")
+            with image.open("rb") as f:
+                result = run(
+                    args=["adb", "exec-in", "sh -c " + shlex.quote(stream)],
+                    stdin=f,
+                    timeout=600,
+                )
+            if result.returncode != 0:
+                said = result.stdout
+                continue
+            code = ""
+            for _ in range(60):
+                code = rshell(command=f"cat {status} 2>/dev/null || true")
+                if code:
+                    break
+                time.sleep(1)
+            if code != "0":
+                said = f"dd ended with {code or 'nothing after 60 s'}"
+                continue
+            if rshell(command=read_back, timeout=300).split(" ")[0] == want:
+                return
+            said = "its md5 read back did not match"
+        except subprocess.TimeoutExpired as error:
+            said = (
+                f"{' '.join(map(str, error.cmd))} did not finish in"
+                f" {error.timeout:.0f} seconds"
+            )
+    if said == "its md5 read back did not match":
+        (image.parent / "md5").unlink(missing_ok=True)
+        said += ". The cached image was discarded, so the next run rebuilds it"
+    _die(
+        message=f"{SYSTEM} was not written intact after {PUSH_TRIES} tries;"
+        f" the last: {said}"
+    )
 
 
 if __name__ == "__main__":

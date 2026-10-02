@@ -96,7 +96,7 @@ OS 5.5.5.4 with Magisk 17.3, which is what the requirements above ask for.
 With the Dot on USB:
 
 ```sh
-deploy/dot_root.py                 # rooted Fire OS 5.5.5.4, about 12 minutes
+deploy/dot_root.py                 # rooted Fire OS 5.5.5.4, about 9 minutes
 deploy/install.py kitchen
 ```
 
