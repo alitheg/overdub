@@ -66,6 +66,9 @@ stops when the Dot is rooted.
   starts before `fastboot erase boot0` and has 60 seconds to find the port.
 - In verbose mode a stage prints a line when it starts and when it ends, with
   no running count.
+- Each stage's estimate is an upper bound: the slowest time measured for it,
+  rounded up to the next 5 seconds. The measurements are five roots on macOS
+  and Windows.
 
 The ring during `dot_restore_stock.py 6302`, from a rooted Dot not set up:
 
@@ -222,10 +225,13 @@ ring read white.
 - main.py's `serial_ports()` silently skips a port it cannot open, and waits
   forever. So the script gives it 60 seconds after the reboot to log
   `Found port`, then stops it and says why a port may be missing.
-- The stock payload hangs Windows' VCOM driver on any read that is a multiple
-  of 64 bytes, because no short packet ends it. The script uses a patched
-  payload that sends one, from `bboe/amonet-biscuit`, pinned by SHA-256. It
-  works on Linux and macOS too.
+- The script runs main.py through `BOOTROM_PY`, with v2.0.0's payload from the
+  zip the fastbrick already uses. It writes 64 blocks per command, `0x1003`.
+  On macOS and Windows the step takes 18 s from `Found port` to the reboot.
+- v2.0.0's payload ends a 512-byte block read and a 256-byte RPMB read on a
+  full packet, and Windows' VCOM driver waits for a short packet. So
+  `BOOTROM_PY` follows each read with a 4-byte read, `0x5000`, and drops those
+  4 bytes.
 - v1.1.0's `fastboot-step.sh` ships a Linux-only fastboot. The script runs its
   three commands with the host's fastboot instead: `bin/tz.img` to `tee2`,
   `bin/twrp.img` to `recovery`, then `fastboot oem reboot-recovery`.

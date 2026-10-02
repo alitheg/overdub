@@ -39,6 +39,57 @@ AS_ROOT = (
     "run this as your own user, not as root or with sudo: the downloads would"
     " belong to root, and on Linux udev rules let a user open the Dot"
 )
+BOOTROM_PY = """\
+import struct
+
+import common
+import main
+
+
+def emmc_read(self: common.Device, idx: int) -> bytes:
+    self.dev.write(struct.pack(">III", 0xF00DD00D, 0x1000, idx))
+    return read_flushed(self, 0x200)
+
+
+def emmc_write_blocks(self: common.Device, idx: int, data: bytes) -> None:
+    self.dev.write(struct.pack(">IIII", 0xF00DD00D, 0x1003, idx, len(data) // 0x200))
+    self.dev.write(data)
+    if self.dev.read(4) != b"\\xd0\\xd0\\xd0\\xd0":
+        msg = "device failure"
+        raise RuntimeError(msg)
+
+
+def flash_data(
+    dev: common.Device, data: bytes, start_block: int, max_size: int = 0
+) -> None:
+    data += b"\\0" * (-len(data) % 0x200)
+    if max_size and len(data) > max_size:
+        msg = "data too big to flash"
+        raise RuntimeError(msg)
+    for x in range(0, len(data), 64 * 0x200):
+        dev.emmc_write_blocks(start_block + x // 0x200, data[x : x + 64 * 0x200])
+
+
+def read_flushed(self: common.Device, size: int) -> bytes:
+    self.dev.write(struct.pack(">IIII", 0xF00DD00D, 0x5000, 0x201000, 4))
+    data = self.dev.read(size + 4)
+    if len(data) != size + 4:
+        msg = "read fail"
+        raise RuntimeError(msg)
+    return data[:size]
+
+
+def rpmb_read(self: common.Device) -> bytes:
+    self.dev.write(struct.pack(">II", 0xF00DD00D, 0x2000))
+    return read_flushed(self, 0x100)
+
+
+common.Device.emmc_read = emmc_read
+common.Device.emmc_write_blocks = emmc_write_blocks
+common.Device.rpmb_read = rpmb_read
+main.flash_data = flash_data
+main.main()
+"""
 BOOT_SH = """\
 set -e
 mountpoint -q /system || mount /system
@@ -108,11 +159,6 @@ adb kill-server
 Then run it again with the new group, which a new login also has:
 
 """  # ruff: ignore[line-too-long]
-PAYLOAD_NAME = "payload.bin"
-PAYLOAD_SHA = "a23a3dc5baf0c255f31e8c915dc00d3c82978e4a180aa441ac444c79afdaa5cf"
-PAYLOAD_URL = (
-    "https://github.com/bboe/amonet-biscuit/releases/download/payload-v1/payload.bin"
-)
 PUSH_TRIES = 3
 PYSERIAL = "pyserial-3.5-py2.py3-none-any.whl"
 PYSERIAL_SHA = "c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0"
@@ -256,11 +302,11 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
     with log_path.open("w") as log:
         if ARGS.verbose:
             show(
-                text=f"{clock()} $ {sys.executable} main.py (amonet v1.1.0"
-                " bootrom step)"
+                text=f"{clock()} $ {sys.executable} -c BOOTROM_PY (amonet v1.1.0"
+                " bootrom step, 64 blocks per write)"
             )
         brom = subprocess.Popen(
-            [sys.executable, "main.py"],
+            [sys.executable, "-c", BOOTROM_PY],
             cwd=amonet / "modules",
             env=env,
             stderr=subprocess.STDOUT,
@@ -299,7 +345,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                 )
         if not erase:
             PROGRESS.begin(
-                estimate="5 min", label="finishing the downgrade to amonet v1.1.0"
+                estimate="30 s", label="finishing the downgrade to amonet v1.1.0"
             )
         try:
             brom.wait(timeout=1800)
@@ -423,7 +469,6 @@ def downgrade(*, from_twrp: bool) -> None:
         dirname="v1", name=AMONET_V1, url=MIRROR + "/" + AMONET_V1, want=AMONET_V1_SHA
     )
     wheel = fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA)
-    payload = fetch(name=PAYLOAD_NAME, url=PAYLOAD_URL, want=PAYLOAD_SHA)
     if from_twrp:
         say(text="Restarting the Dot into fastboot mode. Waiting for it to start.")
         run(args=["adb", "reboot", "bootloader"], check=True)
@@ -449,8 +494,8 @@ def downgrade(*, from_twrp: bool) -> None:
             message="the Dot already runs amonet v1.1.0's bootloader."
             " Run dot_root.py again."
         )
-    PROGRESS.begin(estimate="5 min", label="downgrading to amonet v1.1.0; LED ring off")
-    bootrom(amonet=amonet, erase=True, payload=payload, wheel=wheel)
+    PROGRESS.begin(estimate="40 s", label="downgrading to amonet v1.1.0; LED ring off")
+    bootrom(amonet=amonet, erase=True, payload=v2_payload(), wheel=wheel)
     v1_recovery()
 
 
@@ -569,13 +614,13 @@ def install_fireos() -> None:
         PROGRESS.begin(estimate="5 s", label="formatting userdata")
         if not rscript(body=DATA_SH, name="data.sh", work=work):
             _die(message="userdata did not format and mount")
-        PROGRESS.begin(estimate="80 s", label="pushing Fire OS 5.5.5.4 (397 MB)")
+        PROGRESS.begin(estimate="95 s", label="pushing Fire OS 5.5.5.4 (397 MB)")
         push_checked(local=fireos, remote="/data/fireos.zip")
         PROGRESS.begin(estimate="2-3 min", label="installing Fire OS 5.5.5.4")
         twrp_install(name="Fire OS 5.5.5.4", path="/data/fireos.zip")
         rshell(command="rm -f /data/fireos.zip")
 
-        PROGRESS.begin(estimate="15 s", label="patching the boot image")
+        PROGRESS.begin(estimate="40 s", label="patching the boot image")
         magiskboot = work / "magiskboot"
         with zipfile.ZipFile(magisk) as z:
             magiskboot.write_bytes(z.read("arm/magiskboot"))
@@ -614,7 +659,7 @@ def install_fireos() -> None:
         if not rscript(body=SYSTEM_SH, name="system.sh", work=work):
             _die(message="patching /system failed")
 
-        PROGRESS.begin(estimate="20 s", label="installing Magisk 17.3")
+        PROGRESS.begin(estimate="25 s", label="installing Magisk 17.3")
         magisk_zip = DOT_TMP / "magisk.zip"
         push_checked(local=magisk, remote=magisk_zip)
         twrp_install(name="Magisk 17.3", path=magisk_zip)
@@ -698,7 +743,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     want=AMONET_V1_SHA,
                 ),
                 erase=False,
-                payload=fetch(name=PAYLOAD_NAME, url=PAYLOAD_URL, want=PAYLOAD_SHA),
+                payload=v2_payload(),
                 wheel=fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA),
             )
             v1_recovery()
@@ -827,7 +872,6 @@ def prefetch() -> None:
         dirname="v1", name=AMONET_V1, url=MIRROR + "/" + AMONET_V1, want=AMONET_V1_SHA
     )
     fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA)
-    fetch(name=PAYLOAD_NAME, url=PAYLOAD_URL, want=PAYLOAD_SHA)
     fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
     fetch(name=MAGISK, url=MAGISK_URL, want=MAGISK_SHA)
 
@@ -1086,6 +1130,13 @@ def v1_recovery() -> None:
         timeout=120,
     )
     run(args=["fastboot", "oem", "reboot-recovery"], check=True, cwd=amonet, timeout=60)
+
+
+def v2_payload() -> pathlib.Path:
+    amonet = unpack(
+        dirname="v2", name=AMONET_V2, url=MIRROR + "/" + AMONET_V2, want=AMONET_V2_SHA
+    )
+    return amonet / "brom-payload" / "build" / "payload.bin"
 
 
 def warn(text: str) -> None:
