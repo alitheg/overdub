@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Return an Echo Dot (2nd Generation) rooted on amonet v1.1.0 to stock Fire OS 6:
-build 4405 (6.5.5.6), 5041 (6.5.0.5), 6302 (6.4.6.6), or 8138, 8142 or 8146
-(6.5.7.4.1). Use it to test dot_root.py from a clean start. The Dot must be in
-v1.1.0's TWRP 3.2.3, or booted with adb; the script reboots it to TWRP. After a
-10-second countdown, which Ctrl-C cancels, it writes Amazon's preloader, LK,
-TEE, boot and system for that build, the stock partition table built from the
-Dot's own, and fresh cache and userdata. Root is gone afterwards; dot_root.py
-puts it back. It uses the one Dot on USB; set ANDROID_SERIAL when several are.
-It needs Python 3.9 or later, and adb from Android platform-tools.
-docs/rooting.md says why each step is there.
-"""
+"""Return an Echo Dot (2nd Generation) rooted on amonet v1.1 or v2 to stock."""
 
 from __future__ import annotations
 
@@ -38,7 +28,7 @@ from typing import TYPE_CHECKING, BinaryIO, NamedTuple, NoReturn, TextIO
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-ARGS = argparse.Namespace(delay=0, shown=None, verbose=False)
+ARGS = argparse.Namespace(dd="dd", delay=0, shown=None, verbose=False)
 AS_ROOT = (
     "run this as your own user, not as root or with sudo: the downloads would"
     " belong to root, and on Linux udev rules let a user open the Dot"
@@ -46,12 +36,23 @@ AS_ROOT = (
 
 
 BLOCK_SIZE_FIELD = 3
+CHAIN_TEE = ("tee2", "tee1")
+CLEAR_BOOT0 = (
+    "echo 0 > /sys/block/mmcblk0boot0/force_ro; "
+    "{dd} if=/dev/zero of=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null; "
+    "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
+    "echo 3 > /proc/sys/vm/drop_caches; "
+    'echo "$({dd} if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null | wc -c)'
+    " $({dd} if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null"
+    " | tr -d '\\0' | wc -c)\""
+)
 DISK = "/dev/block/mmcblk0"
 DOT_TMP = pathlib.PurePosixPath("/tmp")  # ruff: ignore[hardcoded-temp-file]
 DST_EXTENTS_FIELD = 6
 FLUSH = "sync && echo 3 > /proc/sys/vm/drop_caches && echo flushed"
 FTVDB = "https://ftvdb.com/echo/firmware/com.amazon.biscuit.android.os/"
 GPT_HEADER_SIZE = 92
+HEAD_CHECK = 1 << 20
 IMAGES = ("preloader", "lk", "tee", "boot", "system")
 MEGA = 1e6
 MORE_THAN_ONE = (
@@ -86,12 +87,13 @@ PAYLOAD_VERSION = 2
 REPLACE = 0
 REPLACE_BZ = 1
 REPLACE_XZ = 8
-STATUS = DOT_TMP / "dd.status"
-STEPS = 15
+STEPS = 16
 STOCK_PARTITIONS = 16
+TWRP_VERSIONS = ("3.2.", "3.7.")
 UNMOUNT = (
-    'for m in $(grep "^/dev/block/mmcblk0" /proc/mounts | cut -d" " -f2); '
-    'do umount "$m"; done'
+    'for m in $(grep "^/dev/block" /proc/mounts | cut -d" " -f2); do umount "$m";'
+    ' done; echo "left:$(grep "^/dev/block" /proc/mounts | cut -d" " -f2'
+    ' | tr "\\n" " ")"'
 )
 USER_SERIAL = os.environ.get("ANDROID_SERIAL")
 VARINT_MORE = 0x80
@@ -99,18 +101,11 @@ WIRE_FIXED32 = 5
 WIRE_FIXED64 = 1
 WIRE_LEN = 2
 WIRE_VARINT = 0
-
-
 WRITES = (
     ("system", "system_a", "write system image to system_a (768 MB)", "3-4 min"),
     ("system", "system_b", "write system image to system_b (768 MB)", "3-4 min"),
     ("boot", "boot_a", "write boot image to boot_a", "10 s"),
     ("boot", "boot_b", "write boot image to boot_b", "10 s"),
-    ("tee", "tee1", "write TEE image to tee1", "5 s"),
-    ("tee", "tee2", "write TEE image to tee2", "5 s"),
-    ("lk", "lk_a", "write LK image to lk_a", "5 s"),
-    ("lk", "lk_b", "write LK image to lk_b", "5 s"),
-    ("expdb", "expdb", "zero expdb (amonet payload)", "5 s"),
     ("misc", "misc", "zero misc (slot metadata)", "5 s"),
 )
 
@@ -204,9 +199,14 @@ class Progress:
         back = "\r" if self.halt() else ""
         show(text=f"{back}{self.line}done in {self.seconds()}, {self.minutes()}m total")
 
-    def fail(self, message: str) -> NoReturn:
+    def fail(self, message: str, *, bootable: bool = False) -> NoReturn:
         if self.halt():
             print()
+        if not bootable and 0 < self.step < self.steps:
+            message += (
+                ". boot0 has no preloader until the last step, so the Dot will not"
+                " start at all until this run finishes"
+            )
         _die(message=message)
 
     def halt(self) -> bool:
@@ -222,6 +222,10 @@ class Progress:
 
     def seconds(self) -> str:
         return f"{int(time.monotonic() - self.ts):3d}s"
+
+    def skip(self) -> None:
+        back = "\r" if self.halt() else ""
+        show(text=f"{back}{self.line}already correct, {self.minutes()}m total")
 
     def tick(self) -> None:
         while not self.stopped.wait(1):
@@ -263,6 +267,19 @@ def cache_note() -> None:
         )
 
 
+def chain_writes() -> tuple[tuple[str, str, str, str], ...]:
+    live = "lk_b" if rshell(command="getprop ro.boot.slot_suffix") == "_b" else "lk_a"
+    spare = "lk_a" if live == "lk_b" else "lk_b"
+    first, last = CHAIN_TEE
+    return (
+        ("lk", spare, f"write LK image to {spare} (spare slot)", "5 s"),
+        ("tee", first, f"write TEE image to {first} (backup)", "5 s"),
+        ("expdb", "expdb", "zero expdb (amonet kaeru payload)", "5 s"),
+        ("lk", live, f"write LK image to {live} (live slot)", "5 s"),
+        ("tee", last, f"write TEE image to {last} (primary)", "5 s"),
+    )
+
+
 def check_adb() -> None:
     words = run(args=["adb", "version"], timeout=30).stdout.split()
     version = (
@@ -293,6 +310,23 @@ def check_user() -> None:
     if pwd.getpwuid(os.getuid()).pw_name in plugdev.gr_mem:
         _die(message=NEW_GROUP + rerun())
     _die(message=NO_ACCESS + rerun())
+
+
+def clear_boot0(*, progress: Progress) -> None:
+    answer = rshell(command=CLEAR_BOOT0.format(dd=ARGS.dd)).split("\n")[-1].split()
+    if answer == ["4096", "0"]:
+        return
+    read, *still_set = answer or [""]
+    if read == "4096" and still_set:
+        progress.fail(
+            "boot0's header did not clear, so a failure from here would brick"
+            " rather than fall into the bootrom; nothing else was written",
+            bootable=True,
+        )
+    progress.fail(
+        "boot0 did not read back, so whether its header cleared is unknown;"
+        " nothing else was written"
+    )
 
 
 def clock() -> str:
@@ -360,10 +394,15 @@ def devices(args: list[str]) -> str:
     _die(message=NO_ACCESS + rerun())
 
 
-def digest(*, kind: str, path: pathlib.Path) -> str:
+def digest(*, kind: str, limit: int = 0, path: pathlib.Path) -> str:
     h = hashlib.new(kind)
+    left = limit or path.stat().st_size
     with path.open("rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
+        while left > 0:
+            block = f.read(min(1 << 20, left))
+            if not block:
+                break
+            left -= len(block)
             h.update(block)
     return h.hexdigest()
 
@@ -571,8 +610,22 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         version = rshell(command="getprop ro.twrp.version")
         if not version[:1].isdigit():
             version = ""
-        elif not version.startswith("3.2."):
-            _die(message="this needs amonet v1.1.0's TWRP 3.2.3")
+        elif not version.startswith(TWRP_VERSIONS):
+            _die(message="this needs amonet's TWRP: v1.1.0's 3.2.3 or v2.0.0's 3.7.0")
+    if (
+        rshell(command="toybox dd --help >/dev/null 2>&1 && echo yes").split("\n")[-1]
+        == "yes"
+    ):
+        ARGS.dd = "toybox dd"
+    tools = rshell(
+        command="m=; for t in sgdisk mke2fs blockdev md5sum; do"
+        ' command -v "$t" >/dev/null 2>&1 || which "$t" >/dev/null 2>&1'
+        ' || m="$m $t"; done; echo "tools:$m"'
+    ).split("\n")[-1]
+    if not tools.startswith("tools:"):
+        _die(message="the Dot did not answer which tools it has: " + tools)
+    if tools != "tools:":
+        _die(message="this TWRP has no" + tools[len("tools:") :])
     device = rshell(command="getprop ro.product.device")
     if device != "biscuit":
         _die(
@@ -606,9 +659,17 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
     files["misc"].write_bytes(b"\0" * (parts["misc"][2] * 512))
     for image in ("system", "tee", "lk"):
         files[image] = work / (image + ".img")
-    for key, part, _, _ in WRITES:
+    for key, part, _, _ in (*WRITES, *chain_writes()):
         if files[key].stat().st_size > parts[part][2] * 512:
             _die(message=f"{files[key].name} does not fit {part}")
+    if (
+        rshell(command="[ -b /dev/block/mmcblk0boot0 ] && echo block").split("\n")[-1]
+        != "block"
+    ):
+        _die(
+            message="/dev/block/mmcblk0boot0 is not a block device, so the"
+            " preloader would be written to a file and read back from it"
+        )
     boot0 = rshell(command="cat /sys/block/mmcblk0boot0/size")
     if (
         not boot0.isdigit()
@@ -696,7 +757,7 @@ def read_sectors(*, count: int, start: int) -> bytes:
         args=[
             "adb",
             "exec-out",
-            f"dd if={DISK} bs=512 skip={start} count={count} 2>/dev/null",
+            f"{ARGS.dd} if={DISK} bs=512 skip={start} count={count} 2>/dev/null",
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -723,11 +784,17 @@ def restore(  # ruff: ignore[too-many-arguments]
     progress: Progress,
     work: pathlib.Path,
 ) -> None:
-    rshell(command=UNMOUNT)
+    unmount()
+
+    progress.begin(estimate="5 s", label="clear the preloader header (boot0)")
+    clear_boot0(progress=progress)
+    progress.end()
+
     for key, part, label, estimate in WRITES:
         write(
             estimate=estimate,
             label=label,
+            number=parts[part][0],
             path=files[key],
             progress=progress,
             sector=parts[part][1],
@@ -750,7 +817,8 @@ def restore(  # ruff: ignore[too-many-arguments]
     progress.begin(estimate="30 s", label="format cache and userdata")
     if "No problems found" not in rshell(command="sgdisk --verify " + DISK):
         progress.fail("sgdisk does not accept the new table; do not reboot")
-    rshell(command=UNMOUNT + "; blockdev --rereadpt " + DISK)
+    unmount(progress=progress)
+    rshell(command="blockdev --rereadpt " + DISK)
     if rshell(command='grep -c "mmcblk0p1[78]$" /proc/partitions') != "0":
         progress.fail(
             "the kernel still sees amonet's partitions; do not reboot,"
@@ -768,6 +836,16 @@ def restore(  # ruff: ignore[too-many-arguments]
         progress.fail("cache and userdata did not format; do not reboot")
     progress.end()
 
+    for key, part, label, estimate in chain_writes():
+        write(
+            estimate=estimate,
+            label=label,
+            number=parts[part][0],
+            path=files[key],
+            progress=progress,
+            sector=parts[part][1],
+        )
+
     progress.begin(estimate="5 s", label="write preloader to boot0")
     preloader = work / "preloader.img"
     staged = DOT_TMP / "pl.img"
@@ -775,7 +853,7 @@ def restore(  # ruff: ignore[too-many-arguments]
         progress.fail("the preloader did not reach the Dot; do not reboot")
     rshell(
         command="echo 0 > /sys/block/mmcblk0boot0/force_ro; "
-        f"dd if={staged} of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
+        f"{ARGS.dd} if={staged} of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
         "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
         "echo 3 > /proc/sys/vm/drop_caches"
     )
@@ -923,6 +1001,19 @@ def stock_gpt(  # ruff: ignore[too-many-locals]
     return primary, backup, backup_lba - 32, parts
 
 
+def unmount(*, progress: Progress | None = None) -> None:
+    left = rshell(command=UNMOUNT).split("\n")[-1]
+    if left.startswith("left:"):
+        if not left[len("left:") :].strip():
+            return
+        message = "still mounted: " + left[len("left:") :].strip()
+    else:
+        message = "the Dot did not answer what is mounted: " + left
+    if progress:
+        progress.fail(message + "; do not reboot")
+    _die(message=message + "; nothing was written")
+
+
 def usb_serial() -> str | None:
     if USER_SERIAL:
         if ":" in USER_SERIAL:
@@ -962,54 +1053,60 @@ def warn(text: str) -> None:
     show(kind="warn", text=paint(code=33, text=textwrap.fill(text, 79)))
 
 
-def write(
-    *, estimate: str, label: str, path: pathlib.Path, progress: Progress, sector: int
+def write(  # ruff: ignore[too-many-arguments]
+    *,
+    estimate: str,
+    label: str,
+    number: int | None = None,
+    path: pathlib.Path,
+    progress: Progress,
+    sector: int,
 ) -> None:
     n = path.stat().st_size
     if sector % 8 == 0 and n % 4096 == 0:
-        bs, seek, count = 4096, sector // 8, n // 4096
+        bs, offset, count = 4096, sector // 8, n // 4096
     else:
-        bs, seek, count = 512, sector, n // 512
+        bs, offset, count = 512, sector, n // 512
+    verify = (
+        f"{ARGS.dd} if={DISK} bs={bs} skip={offset} count={count} 2>/dev/null | md5sum"
+    )
+    want = digest(kind="md5", path=path)
+    head = min(n, HEAD_CHECK)
     progress.begin(estimate=estimate, label=label)
-    if rshell(command=f"rm -f {STATUS} && echo cleared").split("\n")[-1] != "cleared":
-        progress.fail(f"{STATUS} could not be cleared before {label}; do not reboot")
-    with path.open("rb") as f:
-        result = command(
-            args=[
-                "adb",
-                "exec-in",
-                (
-                    f"dd of={DISK} bs={bs} seek={seek} 2>/dev/null;"
-                    f" echo $? > {STATUS}.part && mv {STATUS}.part {STATUS}"
-                ),
-            ],
-            stderr=subprocess.STDOUT,
-            stdin=f,
-            stdout=subprocess.PIPE,
-            timeout=900,
+    same_head = head == n or not md5_mismatch(
+        command=f"{ARGS.dd} if={DISK} bs={bs} skip={offset} count={head // bs}"
+        " 2>/dev/null | md5sum",
+        want=digest(kind="md5", limit=head, path=path),
+    )
+    if same_head and not md5_mismatch(command=verify, want=want):
+        progress.skip()
+        return
+    if number is not None:
+        start = rshell(command=f"cat /sys/class/block/mmcblk0p{number}/start")
+        if start.split("\n")[-1].strip() != str(sector):
+            progress.fail(
+                f"{DISK}p{number} starts at {start or 'nothing'}, not {sector},"
+                " so the running partition table is not the one this expects"
+            )
+        pushed = run(args=["adb", "push", path, f"{DISK}p{number}"], timeout=1800)
+        if pushed.returncode != 0:
+            progress.fail(f"{label} failed; do not reboot:\n{pushed.stdout}")
+    else:
+        staged = DOT_TMP / path.name
+        pushed = run(args=["adb", "push", path, staged], timeout=120)
+        if pushed.returncode != 0:
+            progress.fail(
+                f"{label} did not reach the Dot; do not reboot:\n{pushed.stdout}"
+            )
+        done = rshell(
+            command=f"{ARGS.dd} if={staged} of={DISK} bs={bs} seek={offset}"
+            f" && rm -f {staged} && echo written"
         )
-    if result.returncode != 0:
-        progress.fail(
-            f"{label} failed; do not reboot:\n" + result.stdout.decode(errors="replace")
-        )
-    deadline = time.monotonic() + 120
-    while True:
-        status = rshell(command=f"cat {STATUS} 2>/dev/null || echo running").split(
-            "\n"
-        )[-1]
-        if status.isdigit():
-            break
-        if time.monotonic() > deadline:
-            progress.fail(f"{label} did not finish within 2 minutes; do not reboot")
-        time.sleep(1)
-    if status != "0":
-        progress.fail(f"{label} failed on the Dot: dd exited {status}; do not reboot")
+        if done.split("\n")[-1] != "written":
+            progress.fail(f"{label} failed; do not reboot:\n{done}")
     if rshell(command=FLUSH).split("\n")[-1] != "flushed":
         progress.fail(label + " could not be flushed; do not reboot")
-    wrong = md5_mismatch(
-        command=f"dd if={DISK} bs={bs} skip={seek} count={count} 2>/dev/null | md5sum",
-        want=digest(kind="md5", path=path),
-    )
+    wrong = md5_mismatch(command=verify, want=want)
     if wrong:
         progress.fail(f"{label} did not verify{wrong}; do not reboot")
     progress.end()

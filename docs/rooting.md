@@ -294,98 +294,85 @@ ring read white.
 
 ## Back to stock: dot_restore_stock.py
 
-`deploy/dot_restore_stock.py <build>` returns a Dot on amonet v1.1.0 to stock
-Fire OS 6, to test `dot_root.py` from a clean start. It follows `dot_root.py`'s
-host rules.
+`deploy/dot_restore_stock.py <build>` returns a Dot on amonet v1.1.0 or v2.0.0
+to stock Fire OS 6, to test `dot_root.py` from a clean start. It follows
+`dot_root.py`'s host rules.
 
-- It starts from v1's TWRP 3.2.3, and reboots a booted Dot into it. Any other
-  TWRP stops it, because the table surgery reads v1's layout. It waits up to
-  30 seconds for TWRP's version and MTP, and a version that does not start
-  with a digit reads as not yet set.
-- It writes system, boot, TEE, LK, expdb, misc, both partition tables and
-  boot0, and formats cache and userdata. Other partitions keep what they
-  hold. It uses the one Dot on USB, or `ANDROID_SERIAL`, and never picks
-  among several.
-- TWRP must report `ro.product.device` as `biscuit`; amonet v1.1.0's TWRP
-  sets it in its `default.prop`.
-- It knows 6 builds: 4405 (6.5.5.6, the oldest with a `payload.bin`), 5041
-  (6.5.0.5), 6302 (6.4.6.6), and 8138, 8142 and 8146 (6.5.7.4.1). All ship the
-  same LK, `63cb91b-20221007_072309`. 6.5.5.5 (4310M) and Fire OS 5 ship a
-  block image (`system.new.dat`) instead, which the script cannot write.
-- The OTA comes from Amazon's CloudFront, found through the build's FTVDB page,
-  which FTVDB keys by the OTA's md5. The pin is the SHA-256 of a download that
-  matched that md5. Files go to `overdub-stock` beside `dot_root.py`'s cache,
-  and the script prints its path and size after the reboot.
-- The images come out of the OTA's `payload.bin`: a `CrAU` version 2 header,
-  a protobuf manifest, then `REPLACE`, `REPLACE_BZ` and `REPLACE_XZ`
-  operations. Each image is checked
-  against the manifest's SHA-256, a cached one on every run. Each operation is
-  read where it lies, so peak memory is one image plus one operation: about
-  1 GB, for the 768 MB system image.
-- A passed check prints ✅, or `ok` on a console that cannot encode it, such as
-  a legacy Windows code page, where printing it would raise
+- v2.0.0's TWRP mounts by name, under `/dev/block/platform/.../by-name/`, so an
+  unmount pattern anchored on `/dev/block/mmcblk0` matched nothing there and
+  the writes went to mounted filesystems. What is left mounted is named
+  back, because a refused `umount` is otherwise silent and the Dot has no
+  screen to look at.
+- That TWRP carries two `dd` implementations which do not take the same
+  operands: the one on the path answers `conv option disabled`. So nothing
+  passes `conv`, which nothing needs -- a block device has no length to
+  truncate. `sgdisk`, `mke2fs`, `blockdev` and `md5sum` are looked for before
+  the countdown, because `sgdisk` and `mke2fs` are not reached until after
+  1.6 GB has gone in.
+- 6.5.5.5 (4310M) and Fire OS 5 ship a block image (`system.new.dat`) rather
+  than a `payload.bin`, which is why they are not among the builds offered.
+- FTVDB keys an OTA by its md5, so the download is found by md5 and then
+  pinned by the SHA-256 of a copy that matched it.
+- Each `payload.bin` operation is read where it lies, so peak memory is one
+  image plus one operation: about 1 GB, for the 768 MB system image.
+- A passed check prints `ok` rather than the tick where the console cannot
+  encode it, such as a legacy Windows code page, which would otherwise raise
   `UnicodeEncodeError`.
 
 ### The partition table
 
 - amonet v1.1.0 renames the stock `boot_a` and `boot_b` to `boot_a_x` and
   `boot_b_x`, and adds its own `boot_a` and `boot_b` as partitions 17 and 18,
-  cut from the end of userdata.
-- The stock table is built from the Dot's own: drop amonet's two, strip the
-  `_x`, and extend userdata to the last usable LBA. That leaves 16 partitions,
-  and the script stops on any other count.
-- The table must have a 92-byte header, 128 entries of 128 bytes, and both
-  CRCs right. A run cut during the primary's write leaves it damaged, with
-  stock and amonet entries mixed. The backup, written first, is then read
-  instead. If neither is intact, the script stops.
-- A table with no `_x` name is already stock, and is kept. So a run stopped
-  after the table went in can be run again, and redoes every step.
-- Every offset and size written comes from that table, not from constants. The
-  backup table goes to the last 33 sectors, before the primary.
-- After both, `sgdisk --verify` must report no problems, and the kernel rereads
-  the table. p17 and p18 must be gone from `/proc/partitions`, and userdata
-  must have its new size, before cache and userdata are formatted. Against the
-  old table, `mke2fs` would size userdata to amonet's cut.
+  cut from the end of userdata. The stock table is rebuilt from the Dot's own
+  rather than from constants, so every offset and size is that Dot's.
+- The backup table goes in before the primary: a run cut during the primary's
+  write leaves it mixed, and the backup is what the next run reads instead.
+- A table with no `_x` name is already stock and is kept: that is what makes a
+  stopped run safe to repeat, and why v2.0.0's table needs no surgery.
+- The kernel must reread the table before cache and userdata are formatted.
+  Against the old one, `mke2fs` would size userdata to amonet's cut.
+- The first run on a Dot saves that Dot's own table as
+  `current-gpt-<serial>.bin`, and later runs keep it rather than saving the
+  stock table over it.
 
 ### The writes
 
-- system, boot, TEE and LK go to both slots, so the Dot boots stock whichever
-  slot it picks.
-- boot is padded with zeros to its 16 MiB partition, so no byte of amonet's
-  boot image survives, and the read-back covers the whole partition.
-- expdb holds amonet's payload and misc holds the slot metadata. Both are
-  zeroed.
-- Each write is `adb exec-in` into `dd`, then `sync`, then a page cache drop,
-  then an md5 read back from the same range. Without the drop, the read comes
-  from the cache and proves only that adb delivered the bytes. `dd` uses
-  4096-byte blocks where the offset and size allow, else 512.
-- `adb exec-in` returns before `dd` on the Dot finishes, and carries no exit
-  status. With Ubuntu 24.04's adb (34.0.4-debian), a 1.7 MB image had 77 to
-  151 KB written when adb returned, and all of it 2 seconds later. macOS's
-  platform-tools 37.0.0 returned about 1 second early, after 1.1 GB. Both
-  report 1.0.41. So `dd` writes its exit status to `/tmp/dd.status`, and the
-  script waits up to 2 minutes for it before the read-back.
-- The status goes to a `.part` file and is renamed into place, because the
-  shell creates the file before `echo` writes it, and a read in that gap is
-  empty. Only a number ends the wait: an adb error line reads as "not yet".
-  The previous file is removed first, and the removal checked, so the last
-  write's `0` cannot pass this one. A `dd` left running by a stopped run can
-  still write its status late; the md5 read-back then catches a short write.
-- A failed read-back names the md5 it read and the one it expected.
-- Nothing is written until every image is built and checked to fit its
-  partition. Then a 10-second countdown runs; Ctrl-C there stops the script
-  with nothing written. No input is needed to go on.
-- The preloader goes to `boot0` last, with `force_ro` lifted for the write and
-  set again after it.
-- Every failure after the countdown says "do not reboot": the Dot is part way
-  between amonet and stock, and TWRP is still up. Run the script again. It
-  redoes every write and reads each one back.
-- Each adb command has a time limit: 15 minutes for a write, at most 5 for
-  any other. A limit reached after the countdown is a failure like any other,
-  and says "do not reboot".
-- The first run on a Dot saves its table as `current-gpt-<serial>.bin` in the
-  build's folder. A later run on that Dot keeps that copy rather than saving
-  the stock table over it.
+- boot0's header is cleared first. With no valid preloader the bootrom waits
+  for a USB host instead of running anything, so a failure anywhere after it
+  leaves a Dot that amonet's bootrom step can reach without opening the case.
+  Forced on hardware: the bootrom appeared 4 seconds after the reboot and
+  waited about 39 seconds, and amonet v2.0.0's bootrom step rewrote the whole
+  chain in 22. The order of the bootchain writes is not what makes this
+  survivable -- with the header gone, no slot is reachable anyway -- the
+  bootrom is.
+- `tee1` and `tee2` are not slot-tied: every slot-tied partition takes a letter
+  from `ro.boot.slot_suffix` and TEE takes digits, and amonet's bootrom step
+  writes its LK to both slots unconditionally, but its TEE payload only to
+  `tee1`. So they go backup first and
+  primary last, rather than by slot.
+- boot is padded with zeros to the size of `boot_a`, which both slots share, so
+  no byte of amonet's boot image survives and the read-back covers the whole
+  partition.
+- TWRP answers `ro.product.device` only because amonet's TWRP sets it in its
+  `default.prop`; a recovery ramdisk has no reason to carry it otherwise.
+- A push and its read-back address different block devices, whose page caches
+  are not coherent, so the cache drop between them is what makes the comparison
+  mean anything.
+- `adb push` to a node that does not exist does not fail: adbd creates a
+  regular file in TWRP's RAM-backed `/dev` and reports success. A partition's
+  read-back still catches that, because it reads the raw disk at the computed
+  offset rather than the node -- but only after 768 MB has gone into a tmpfs on
+  a 512 MB device. So the start sector is checked first, which also catches a
+  number that means a different partition in the table the kernel still holds.
+- boot0 is the one write whose read-back names the node it wrote, so there a
+  regular file would match itself and pass. Hence the check that it is a block
+  device. For the same reason the cleared header is counted twice, bytes read
+  and bytes left non-zero: a read that returned nothing would otherwise look
+  like a header that cleared.
+- The skip compares a mebibyte of head first, which costs 0.07 s and is enough
+  because a different build differs within a kibibyte or two. Only a partition
+  that looks right pays for the full comparison, 13 s against the 80 s a write
+  would take.
 - A restored Dot has no Wi-Fi until it is set up in the Alexa app. To root it
   again, skip that setup: on Wi-Fi it can update to a build `dot_root.py` has
   not met, or away from the build under test.
