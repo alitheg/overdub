@@ -11,8 +11,8 @@
 #                 android-5.1.1/android.jar out of it
 #
 #   R8_JAR        any jar carrying com.android.tools.r8.D8. The SDK ships one at
-#                 build-tools/<version>/lib/d8.jar, which is what README.md and
-#                 CI use; standalone, it is
+#                 build-tools/<version>/lib/d8.jar, which is what docs/usage.md
+#                 and CI use; standalone, it is
 #                 https://dl.google.com/dl/android/maven2/com/android/tools/r8/
 #                 9.4.14/r8-9.4.14.jar  (.sha1 sits beside it)
 #

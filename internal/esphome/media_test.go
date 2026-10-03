@@ -1296,7 +1296,7 @@ func TestAMuteOffTheWireWithNothingToSetItDoesNotPanic(t *testing.T) {
 
 func TestTheRouteIsPublishedAsTheStringHomeAssistantShows(t *testing.T) {
 	if routeSpeaker != "speaker" || routeJack != "jack" || routeBluetooth != "bluetooth" {
-		t.Fatalf("the routes are %q, %q and %q; README.md promises speaker, jack and bluetooth",
+		t.Fatalf("the routes are %q, %q and %q; docs/usage.md promises speaker, jack and bluetooth",
 			routeSpeaker, routeJack, routeBluetooth)
 	}
 	base := device.MusicVolume{

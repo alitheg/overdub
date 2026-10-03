@@ -159,8 +159,8 @@
   `Nothing removed; see the warning above.` when it warned.
 - A run that stops at STILL SUPERVISED exits before the notes. The reboot
   that ends the loop leaves nothing, so the next run ends `Already
-  uninstalled` and the notes are never printed. README.md's Uninstall section
-  says the same.
+  uninstalled` and the notes are never printed. docs/usage.md's Uninstalling
+  section says the same.
 - The filter is an allowlist, not "anything echoed", because `adb` merges
   stderr into stdout and a linker warning from `su` would read as a leftover.
 - The ports are Go constants (`apiPort`, `sendspin.Port`), which Python cannot

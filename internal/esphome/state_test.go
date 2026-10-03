@@ -140,7 +140,7 @@ func TestTheShippedDelaysIgnoreTheChimeAndReportSpeech(t *testing.T) {
 	}
 
 	if worst := SoundOnDelay + sample; worst != 1500*time.Millisecond {
-		t.Errorf("the longest sound that can go unreported is %v; README promises about a "+
+		t.Errorf("the longest sound that can go unreported is %v; docs/usage.md promises about a "+
 			"second and a half", worst)
 	}
 

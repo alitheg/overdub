@@ -5,7 +5,8 @@ Generation)** (model RS03QR, codename biscuit, FireOS 5.5.5.4) and presents the
 Dot to Home Assistant as an ESPHome device. It runs on the Dot itself, under
 Magisk, alongside stock Alexa.
 
-`README.md` says how to use it. This file and `docs/` say why, and most of it
+`README.md` has the basics, the install steps and the videos; `docs/usage.md`
+says how to use it. This file and the rest of `docs/` say why, and most of it
 was measured on hardware rather than reasoned out.
 
 ## Commands
@@ -49,7 +50,9 @@ SENDSPIN_INTEROP=1 go test -count=1 -run Interop ./internal/sendspin/
 ## Comments
 
 - The code carries no explanatory comments. The why goes in `docs/`, on the
-  page that already covers the area; how to use it goes in `README.md`.
+  page that already covers the area; how to use it goes in `docs/usage.md`.
+  `README.md` keeps only basic information, install instructions and video
+  links.
 - Do not add prose comments back, even when a change makes one tempting.
 - Four things stay, because the code cannot recover them:
   - one doc block per package: `// Package button ...`,
@@ -83,6 +86,8 @@ pages imported below apply to everything. Read the page for a subsystem
 - `docs/command.md`: the Alexa command path, the credential, MapDump
 - `docs/hardware.md`: anything run against the real device
 - `docs/sendspin.md`: the Sendspin client, its WebSocket, its handshake
+- `docs/usage.md`: what a user runs and sees -- the installer's output, the
+  entities, uninstalling, troubleshooting
 
 @docs/constraints.md
 @docs/pitfalls.md

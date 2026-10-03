@@ -476,7 +476,7 @@ def install_mapdump() -> None:
                 "mapdump.jar",
                 "None was built here, and the device carries none either, so the"
                 " Alexa command box is not offered. deploy/mapdump/build.sh builds"
-                " one; README.md says what it needs.",
+                " one; docs/usage.md says what it needs.",
             )
         else:
             warn(
