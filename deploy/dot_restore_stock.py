@@ -343,26 +343,22 @@ def color(stream: TextIO) -> bool:
     return stream.isatty()
 
 
-def command(  # ruff: ignore[too-many-arguments]
+def command(
     *,
     args: list[str | pathlib.PurePath],
-    errors: str | None = None,
     stderr: int | None = None,
     stdin: int | BinaryIO | None = None,
     stdout: int | None = None,
-    text: bool = False,
     timeout: float | None = None,
-) -> subprocess.CompletedProcess[str | bytes]:
+) -> subprocess.CompletedProcess[bytes]:
     if ARGS.verbose:
         show(text=f"{clock()} $ {' '.join(map(str, args))}")
     result = subprocess.run(
         args,
         check=False,
-        errors=errors,
         stderr=stderr,
         stdin=stdin,
         stdout=stdout,
-        text=text,
         timeout=timeout,
     )
     if ARGS.verbose:
@@ -887,9 +883,7 @@ def restore(  # ruff: ignore[too-many-arguments]
 
 
 def rshell(*, command: str, timeout: float = 300) -> str:
-    out = run(args=["adb", "shell", "-n", command], timeout=timeout).stdout.replace(
-        "\r", ""
-    )
+    out = run(args=["adb", "shell", "-n", command], timeout=timeout).stdout
     return "\n".join(
         line for line in out.split("\n") if not line.startswith("__bionic_open_tzdata")
     ).strip()
@@ -898,15 +892,15 @@ def rshell(*, command: str, timeout: float = 300) -> str:
 def run(
     *, args: list[str | pathlib.PurePath], timeout: float | None = None
 ) -> subprocess.CompletedProcess[str]:
-    return command(
+    result = command(
         args=args,
-        errors="replace",
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
-        text=True,
         timeout=timeout,
     )
+    result.stdout = result.stdout.decode("utf-8", "replace").replace("\r", "")
+    return result
 
 
 def save(

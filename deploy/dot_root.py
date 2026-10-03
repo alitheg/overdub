@@ -664,7 +664,7 @@ def erase_from_twrp() -> str:
     return ""
 
 
-def fastbrick() -> None:  # ruff: ignore[complex-structure]
+def fastbrick() -> None:
     amonet = unpack(
         dirname="v2", name=AMONET_V2, url=MIRROR + "/" + AMONET_V2, want=AMONET_V2_SHA
     )
@@ -688,9 +688,7 @@ def fastbrick() -> None:  # ruff: ignore[complex-structure]
             out = run(args=args, cwd=amonet, timeout=8).stdout
             started = False
         except subprocess.TimeoutExpired as e:
-            out = e.output or ""
-            if isinstance(out, bytes):
-                out = out.decode(errors="replace")
+            out = (e.output or b"").decode("utf-8", "replace")
             started = True
         if "eMMC-RO" in out:
             _die(message="the Dot's eMMC is read-only; it was not modified")
@@ -1208,7 +1206,7 @@ def rscript(*, body: str, name: str, work: pathlib.Path) -> bool:
 
 
 def rshell(*, command: str, timeout: float | None = None) -> str:
-    out = run(args=["adb", "shell", command], timeout=timeout).stdout.replace("\r", "")
+    out = run(args=["adb", "shell", command], timeout=timeout).stdout
     return "\n".join(
         line for line in out.split("\n") if not line.startswith("__bionic_open_tzdata")
     ).strip()
@@ -1228,13 +1226,12 @@ def run(
         args,
         check=False,
         cwd=cwd,
-        errors="replace",
         stderr=subprocess.STDOUT,
         stdin=stdin,
         stdout=subprocess.PIPE,
-        text=True,
         timeout=timeout,
     )
+    result.stdout = result.stdout.decode("utf-8", "replace").replace("\r", "")
     if ARGS.verbose and not ARGS.probing:
         show(text=f"{clock()}   exit {result.returncode}")
     if check and result.returncode != 0:

@@ -73,14 +73,12 @@ def adb(*args: str) -> tuple[int, str]:
     result = subprocess.run(
         ["adb", *args],
         check=False,
-        errors="replace",
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
-        text=True,
         timeout=STATE.timeout,
     )
-    return result.returncode, result.stdout.replace("\r", "")
+    return result.returncode, result.stdout.decode("utf-8", "replace").replace("\r", "")
 
 
 def adb_key_lines() -> tuple[pathlib.Path, list[str] | None]:
@@ -169,27 +167,24 @@ def build() -> None:
             cwd=ROOT,
             stderr=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            text=True,
         )
-        if dirty.returncode == 0 and dirty.stdout.strip():
+        changes = dirty.stdout.decode("utf-8", "replace").replace("\r", "").rstrip()
+        if dirty.returncode == 0 and changes:
             warn(
-                "build",
-                "This build carries uncommitted changes:",
-                *dirty.stdout.rstrip().split("\n"),
+                "build", "This build carries uncommitted changes:", *changes.split("\n")
             )
     pending(detail="running build.sh", label="build")
     result = subprocess.run(
         [str(script)],
         check=False,
         cwd=ROOT,
-        errors="replace",
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
-        text=True,
     )
     if result.returncode != 0:
-        fail("build", "build.sh failed:", *result.stdout.rstrip().split("\n"))
+        said = result.stdout.decode("utf-8", "replace").replace("\r", "").rstrip()
+        fail("build", "build.sh failed:", *said.split("\n"))
     ok("build", f"build/overdub, md5 {md5(binary)}")
 
 

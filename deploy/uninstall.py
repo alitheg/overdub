@@ -40,13 +40,11 @@ def adb(*args: str) -> tuple[int, str]:
     result = subprocess.run(
         ["adb", *args],
         check=False,
-        errors="replace",
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
-        text=True,
     )
-    return result.returncode, result.stdout.replace("\r", "")
+    return result.returncode, result.stdout.decode("utf-8", "replace").replace("\r", "")
 
 
 def fail(label: str, *lines: str) -> NoReturn:
