@@ -449,6 +449,17 @@ to stock Fire OS 6, to test `dot_root.py` from a clean start. It follows
   chain in 22. The order of the bootchain writes is not what makes this
   survivable -- with the header gone, no slot is reachable anyway -- the
   bootrom is.
+- `misc` gets zeros and, at 0x360, the boot control block amonet v1.1.0's
+  bootrom step writes: `00 41 42 42 01 8f 00`. Slot a is then `prio 15 tries 0
+  success 1`, and slot b is unused. Each slot byte packs `priority:4`,
+  `tries:3` and `success:1`, low bits first.
+- A zeroed `misc` is not safe. Stock's first boot starts slot a with a few
+  tries and `success 0`, and each boot cut short spends one. On bryce, a
+  gesture during the first boot and the power-ons after it left slot a at
+  `tries 0 success 0`. The preloader then reset about every 30 s with the ring
+  dark, never starting LK, so neither the gesture nor `FACTFACT` reached
+  fastboot. It did not fall back to slot b, whose tries stayed at 3. It took
+  the eMMC short to get back. A slot marked good spends no tries.
 - `tee1` and `tee2` are not slot-tied: every slot-tied partition takes a letter
   from `ro.boot.slot_suffix` and TEE takes digits, and amonet's bootrom step
   writes its LK to both slots unconditionally, but its TEE payload only to

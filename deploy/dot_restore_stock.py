@@ -35,6 +35,8 @@ AS_ROOT = (
 )
 
 
+BCB = b"\0ABB\x01\x8f\0"
+BCB_OFFSET = 0x360
 BLOCK_SIZE_FIELD = 3
 CHAIN_TEE = ("tee2", "tee1")
 CLEAR_BOOT0 = (
@@ -106,7 +108,7 @@ WRITES = (
     ("system", "system_b", "write system image to system_b (768 MB)", "3-4 min"),
     ("boot", "boot_a", "write boot image to boot_a", "10 s"),
     ("boot", "boot_b", "write boot image to boot_b", "10 s"),
-    ("misc", "misc", "zero misc (slot metadata)", "5 s"),
+    ("misc", "misc", "write misc, slot a marked good", "5 s"),
 )
 
 
@@ -655,8 +657,10 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
     files["boot"].write_bytes(boot.read_bytes().ljust(boot_size, b"\0"))
     files["expdb"] = work / "expdb.zero"
     files["expdb"].write_bytes(b"\0" * (parts["expdb"][2] * 512))
-    files["misc"] = work / "misc.zero"
-    files["misc"].write_bytes(b"\0" * (parts["misc"][2] * 512))
+    misc = bytearray(parts["misc"][2] * 512)
+    misc[BCB_OFFSET : BCB_OFFSET + len(BCB)] = BCB
+    files["misc"] = work / "misc.img"
+    files["misc"].write_bytes(misc)
     for image in ("system", "tee", "lk"):
         files[image] = work / (image + ".img")
     for key, part, _, _ in (*WRITES, *chain_writes()):
