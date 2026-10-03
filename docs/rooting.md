@@ -52,6 +52,57 @@ stops when the Dot is rooted.
 - With boot0 erased the bootrom resets every 30 to 40 seconds: from Linux,
   the resume went on after 30 seconds, twice, with no one touching the Dot.
 
+## A Dot that shows no light
+
+- A Dot whose preloader runs but never starts LK shows no light and offers
+  no fastboot: only `0e8d:2000`, the preloader, for about a second every
+  30 seconds. Its boot0 is intact, so only the eMMC test-point short reaches
+  the bootrom. `--short` runs the bootrom step for it, with no erase.
+- Neither the gesture nor `FACTFACT` sent to the preloader reached fastboot.
+  mtkclient's four ways to crash a preloader into the bootrom all failed on
+  Amazon's: each came back as the preloader. Its register writes echoed but
+  took no effect.
+- The bootrom step takes only a port it can identify as the bootrom,
+  `0e8d:0003`, vendor and product both, and skips a stock preloader's, which
+  `--short` reports as a missed short. amonet would otherwise take whichever
+  port appears first.
+- It reads ports from pyserial's USB list and opens only the bootrom's, where
+  amonet opened every port to see it. On Linux the preloader's
+  `/dev/ttyACM*` is `dialout`'s, and the udev rule covers only `0e8d:0003`,
+  so amonet's way would never see a missed short.
+- It remembers each port by name and USB ID, and checks every port on each
+  poll. The bootrom usually reuses the preloader's name: on Linux both are
+  `/dev/ttyACM0`, and macOS names a port by its USB location. A port whose ID
+  cannot be read yet, or that will not open yet, is looked at again on the
+  next poll.
+- `--short` applies only to a Dot first seen with nothing on USB. Any other
+  state turns it off, so a later reboot cannot start the short flow. That
+  includes `starting`, which covers a probe that timed out as well as a Dot
+  half started; after a timeout the run asks for fastboot, and a rerun with
+  `--short` goes on.
+- amonet takes any port that appears after it lists the ports at start. So
+  `--short` asks for the short only once amonet logs that it is waiting, and
+  sends no reset first: a Dot plugged in earlier would be in that list and
+  never count as new.
+- The short must be off before the payload starts the eMMC, its first act.
+  Nothing before that touches the eMMC, and the handshake disables the
+  watchdog. So the run holds amonet at its "Remove the short" prompt, counts
+  down 5 seconds, then lets it go on.
+- amonet's first write clears boot0's header. Under `--short` its bootrom
+  step creates `boot0-erased` just before each write, after amonet's first
+  boot0 check, as the erase path creates it before the erase. A run that
+  stops before that leaves boot0 intact and no file. A run that fails or is
+  stopped after it is resumed by a plain rerun.
+- The bootrom step logs the error for a port it still cannot open after 1
+  second, once, and the run shows it at once. udev can set a new port's mode
+  a moment after it appears, so a first failure alone means nothing. A
+  missing udev rule or ModemManager would otherwise hold a `--short` run
+  silent for 10 minutes.
+- The payload starts the eMMC once. With the short still on, either it never
+  comes up and amonet times out waiting for it, or the bootrom step's first
+  read, the partition table's `55 AA`, fails. Both stop the run before amonet
+  writes anything, and a new short starts over.
+
 ## Recording a run
 
 - `--verbose` prints each `adb` and `fastboot` command and its exit status

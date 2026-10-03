@@ -44,16 +44,27 @@ AMONET_V1 = "amonet-biscuit-v1.1.0.zip"
 AMONET_V1_SHA = "bd4d3a18b6b6e9ff6e49a4739159a81020673202795cb3959f7c9ff24351b663"
 AMONET_V2 = "amonet-biscuit-v2.0.0.zip"
 AMONET_V2_SHA = "98297293701082bc7272efe077f941c56fc7b6e1f27ef6f2e93b6e4c6fc7b62d"
-ARGS = argparse.Namespace(delay=0, probing=False, shown=None, verbose=False)
+ARGS = argparse.Namespace(
+    delay=0, probing=False, short=False, shown=None, verbose=False
+)
 AS_ROOT = (
     "run this as your own user, not as root or with sudo: the downloads would"
     " belong to root, and on Linux udev rules let a user open the Dot"
 )
 BOOTROM_PY = """\
+import os
+import pathlib
 import struct
+import time
 
 import common
 import main
+import serial
+from logger import log
+from serial.tools import list_ports
+
+marker = os.environ.get("OVERDUB_ERASED")
+start_payload = main.load_payload
 
 
 def emmc_read(self: common.Device, idx: int) -> bytes:
@@ -72,6 +83,8 @@ def emmc_write_blocks(self: common.Device, idx: int, data: bytes) -> None:
 def flash_data(
     dev: common.Device, data: bytes, start_block: int, max_size: int = 0
 ) -> None:
+    if marker:
+        pathlib.Path(marker).touch()
     data += b"\\0" * (-len(data) % 0x200)
     if max_size and len(data) > max_size:
         msg = "data too big to flash"
@@ -94,10 +107,52 @@ def rpmb_read(self: common.Device) -> bytes:
     return read_flushed(self, 0x100)
 
 
+def find_device(self: common.Device, preloader: bool = False) -> None:
+    seen = {p.device: p.pid for p in list_ports.comports() if p.vid == 0x0E8D}
+    failed = {}
+    log("Waiting for bootrom")
+    while True:
+        pids = {p.device: p.pid for p in list_ports.comports() if p.vid == 0x0E8D}
+        seen = {port: pid for port, pid in seen.items() if port in pids}
+        failed = {port: at for port, at in failed.items() if port in pids}
+        for port, pid in sorted(pids.items()):
+            if pid is None or seen.get(port) == pid:
+                continue
+            if pid == 0x0003:
+                try:
+                    self.dev = serial.Serial(port, common.BAUD, timeout=common.TIMEOUT)
+                except serial.SerialException as e:
+                    at = failed.setdefault(port, time.monotonic())
+                    if at and time.monotonic() - at >= 1:
+                        failed[port] = 0
+                        log("Cannot open " + port + ": " + str(e))
+                    continue
+                log("Found port = " + port)
+                return
+            seen[port] = pid
+            if pid == 0x2000:
+                log("Ignoring the preloader on " + port)
+        time.sleep(0.25)
+
+
+def load_payload(dev: common.Device, path: str) -> None:
+    start_payload(dev, path)
+    try:
+        dev.emmc_switch(0)
+        answered = dev.emmc_read(0)[510:512] == b"\\x55\\xaa"
+    except RuntimeError:
+        answered = False
+    if not answered:
+        log("The eMMC did not answer")
+        raise SystemExit(3)
+
+
 common.Device.emmc_read = emmc_read
 common.Device.emmc_write_blocks = emmc_write_blocks
+common.Device.find_device = find_device
 common.Device.rpmb_read = rpmb_read
 main.flash_data = flash_data
+main.load_payload = load_payload
 main.main()
 """
 CLEAR_BOOT0 = (
@@ -199,6 +254,7 @@ for port in list_ports.comports():
         except serial.SerialException:
             pass
 """
+SHORT_WAIT = 5
 SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 STEPS = 9
 SYSTEM = "/dev/block/other-system"
@@ -383,7 +439,9 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
     shutil.copyfile(payload, amonet / "brom-payload" / "build" / "payload.bin")
     log_path = CACHE / "bootrom.log"
     env = dict(os.environ, PYTHONPATH=str(wheel), PYTHONUNBUFFERED="1")
-    if not erase:
+    if ARGS.short:
+        env["OVERDUB_ERASED"] = str(ERASED)
+    if not erase and not ARGS.short:
         with contextlib.suppress(subprocess.TimeoutExpired):
             subprocess.run(
                 [sys.executable, "-c", RESET_PY],
@@ -408,9 +466,17 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             stdin=subprocess.PIPE,
             stdout=log,
         )
-        brom.stdin.write(b"\n" * 5)
-        brom.stdin.close()
-        time.sleep(3)
+        if not ARGS.short:
+            brom.stdin.write(b"\n" * 5)
+            brom.stdin.close()
+        started = time.monotonic()
+        while time.monotonic() - started < (30 if ARGS.short else 3):
+            if brom.poll() is not None or (
+                ARGS.short
+                and "Waiting for bootrom" in log_path.read_text(errors="replace")
+            ):
+                break
+            time.sleep(0.25)
         if brom.poll() is not None:
             _die(message=f"v1.1.0's bootrom step did not start; see {log_path}")
         if erase:
@@ -423,14 +489,44 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             if failure:
                 brom.kill()
                 _die(message=failure)
+        elif ARGS.short:
+            say(
+                code=33,
+                text="Short the Dot's test point and plug it in. The run waits for"
+                " its bootrom, then says when the short may come off.",
+            )
+            status("Waiting for the bootrom.")
         else:
             PROGRESS.begin(
                 estimate="40 s", label="waiting for the Dot to restart", step=3
             )
         deadline = time.monotonic() + (60 if erase else 600)
+        missed = unopened = 0
         while brom.poll() is None and time.monotonic() < deadline:
-            if "Found port" in log_path.read_text(errors="replace"):
+            text = log_path.read_text(errors="replace")
+            if "Found port" in text:
                 break
+            if ARGS.short and text.count("Ignoring the preloader") > missed:
+                missed = text.count("Ignoring the preloader")
+                if sys.stdout.isatty():
+                    print()
+                said = (
+                    f"Short {missed} missed: the Dot started normally. Unplug, short,"
+                    " and plug it in again."
+                )
+                show(kind="warn", text=paint(code=31, text=said))
+                status("Waiting for the bootrom.")
+            if text.count("Cannot open") > unopened:
+                unopened = text.count("Cannot open")
+                if ARGS.short and sys.stdout.isatty():
+                    print()
+                said = "Cannot open" + text.split("Cannot open")[-1].splitlines()[0]
+                said += ". The run keeps trying."
+                if ARGS.short:
+                    warn(said)
+                    status("Waiting for the bootrom.")
+                else:
+                    PROGRESS.note(said)
             time.sleep(1)
         else:
             if brom.poll() is None:
@@ -439,6 +535,11 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                     message="the Dot's bootrom did not show up as a serial port.\n"
                     + no_port_help()
                 )
+        if ARGS.short and brom.poll() is None:
+            countdown()
+            with contextlib.suppress(OSError):
+                brom.stdin.write(b"\n" * 5)
+                brom.stdin.close()
         if not erase:
             PROGRESS.begin(
                 estimate="30 s", label="finishing the downgrade to v1.1.0", step=3
@@ -449,6 +550,15 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             brom.kill()
             _die(message=f"v1.1.0's bootrom step did not finish; see {log_path}")
     if brom.returncode != 0:
+        said = log_path.read_text(errors="replace")
+        if ARGS.short and (
+            "The eMMC did not answer" in said or "expected pattern" in said
+        ):
+            _die(
+                message="the Dot's eMMC did not answer, most likely because the"
+                " short was still on. Nothing was written. Unplug the Dot and"
+                " run dot_root.py --short again."
+            )
         _die(message=f"v1.1.0's bootrom step failed; see {log_path}")
     if "Reboot to unlocked fastboot" not in log_path.read_text(errors="replace"):
         _die(message=f"v1.1.0's bootrom step did not finish; see {log_path}")
@@ -559,6 +669,19 @@ def color(stream: TextIO) -> bool:
     if os.name == "nt" and "WT_SESSION" not in os.environ:
         return False
     return stream.isatty()
+
+
+def countdown() -> None:
+    text = "The bootrom answered. The short may come off now; continuing{}."
+    if not sys.stdout.isatty():
+        warn(text.format(f" in {SHORT_WAIT} s"))
+        time.sleep(SHORT_WAIT)
+        return
+    for left in range(SHORT_WAIT, 0, -1):
+        status(text.format(f" in {left} s"))
+        time.sleep(1)
+    status(text.format(""))
+    print()
 
 
 def cpio(files: dict[bytes, tuple[int, bytes]]) -> bytes:
@@ -920,6 +1043,12 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         " and each state the Dot reaches",
     )
     parser.add_argument(
+        "--short",
+        action="store_true",
+        help="for a Dot that shows no light and needs its test point shorted:"
+        " wait for its bootrom, say when the short may come off, then root it",
+    )
+    parser.add_argument(
         "--delay",
         const=10,
         default=0,
@@ -931,6 +1060,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
     )
     options = parser.parse_args()
     ARGS.delay = options.delay
+    ARGS.short = options.short
     ARGS.verbose = options.verbose or options.delay > 0
     for tool in ("adb", "fastboot"):
         if not shutil.which(tool):
@@ -954,15 +1084,22 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             DOWNLOADER.start()
         if current not in {"none", "starting"}:
             ERASED.unlink(missing_ok=True)
-        if current == "none" and ERASED.exists() and "bootrom" not in done:
+        if current != "none":
+            ARGS.short = False
+        if (
+            current == "none"
+            and (ERASED.exists() or ARGS.short)
+            and "bootrom" not in done
+        ):
             prefetch()
             done.update(("bootrom", "v1-fastboot"))
-            say(
-                code=33,
-                text="The last run stopped during the downgrade to amonet v1.1.0."
-                " The Dot cannot start until the downgrade is done,"
-                " so this run finishes it.",
-            )
+            if not ARGS.short:
+                say(
+                    code=33,
+                    text="The last run stopped during the downgrade to amonet"
+                    " v1.1.0. The Dot cannot start until the downgrade is done,"
+                    " so this run finishes it.",
+                )
             bootrom(
                 amonet=unpack(
                     dirname="v1",
@@ -1310,6 +1447,18 @@ def state() -> str:
     finally:
         ARGS.probing = False
     return current
+
+
+def status(text: str) -> None:
+    if sys.stdout.isatty():
+        show(
+            end="",
+            flush=True,
+            kind="warn",
+            text="\r" + paint(code=33, text=text.ljust(79)),
+        )
+    else:
+        warn(text)
 
 
 def system_chunks(*, dat: IO[bytes], ranges: list[tuple[int, int]]) -> Iterator[bytes]:

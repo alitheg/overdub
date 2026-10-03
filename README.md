@@ -114,6 +114,9 @@ Both scripts, filmed from start to finish, the Dot beside the terminal:
   Home Assistant reaches it only over Wi-Fi, so add it in the Alexa app. That
   is safe once rooted: `dot_root.py` hides the updater and blocks the update
   hosts.
+- A Dot that shows no light at all, and no fastboot after the gesture, needs
+  its eMMC test point shorted. `dot_root.py --short` waits for its bootrom,
+  says when the short may come off, and roots it.
 - `deploy/dot_restore_stock.py <build>` returns a rooted Dot to stock Fire OS
   6. It erases the whole Dot, Wi-Fi and the Alexa registration included. To
   root it again, do not set it up in the Alexa app first: on Wi-Fi a stock
