@@ -785,7 +785,7 @@ func TestTheReportedSetSaysEachThingOnceAndStopsGrowing(t *testing.T) {
 	}
 }
 
-func TestRepeatingAnActivationCostsNeitherAStateNorAKeepalive(t *testing.T) {
+func TestRepeatingAnActivationIsNotAnsweredAgain(t *testing.T) {
 	ln := listenLocal(t)
 	c := testClient(t)
 	serveOn(t, c, ln)
@@ -798,9 +798,34 @@ func TestRepeatingAnActivationCostsNeitherAStateNorAKeepalive(t *testing.T) {
 		}))
 	}
 
-	if !peer.quiet(400 * time.Millisecond) {
-		t.Error("a repeated activation was answered again: each one writes another" +
-			" client/state and leaves another keepalive ticker running")
+	probe := 901
+	peer.writeBinary(server.sealJSON(t, typeServerComm, delayCommand(&probe)))
+	if got := delaySet(t, peer, server); got != probe {
+		t.Errorf("a repeated activation was answered with a %d ms client/state before"+
+			" the %d ms sent after it: each one writes another client/state and leaves"+
+			" another keepalive ticker running", got, probe)
+	}
+	if _, err := peer.conn.Write(frame(true, opPing, []byte("handled"))); err != nil {
+		t.Fatalf("writing a ping: %v", err)
+	}
+	for {
+		op, body := peer.read()
+		if op == opPong && string(body) == "handled" {
+			return
+		}
+		if op != opBinary {
+			continue
+		}
+		if kind, plain := server.open(t, body); kind == msgJSON {
+			var env envelope
+			if err := json.Unmarshal(plain, &env); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if env.Type == typeClientState {
+				t.Fatal("a second client/state followed the one the delay asked for, so a" +
+					" repeated activation was answered again")
+			}
+		}
 	}
 }
 
