@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import enum
 import gzip
 import hashlib
 import http.client
@@ -186,8 +187,6 @@ FIREOS_SHA = "6ababc517529938f0d1e836c3410a91df19683ae62d7fca9e2ca57320d5d2faa"
 FIREOS_URL = (
     "https://d1s31zyz7dcc2d.cloudfront.net/47a1457e0802980eb32f63cd3ce355c0/" + FIREOS
 )
-LK_V1 = "f379dba-20170906_000423"
-LK_V2 = "63cb91b-20221007_072309"
 MAGISK = "Magisk-v17.3.zip"
 MAGISK_SH = """\
 set -e
@@ -292,6 +291,22 @@ VERIFIED: set[pathlib.Path] = set()
 WAIT = 600
 
 
+class ANSIColor(enum.Enum):
+    RED = 31
+    YELLOW = 33
+
+
+class Kind(enum.Enum):
+    ERROR = "error"
+    INFO = "info"
+    WARN = "warn"
+
+
+class LK(enum.Enum):
+    V1 = "f379dba-20170906_000423"
+    V2 = "63cb91b-20221007_072309"
+
+
 class Progress:
     def __init__(self) -> None:
         self.t0 = time.monotonic()
@@ -360,17 +375,30 @@ class Progress:
             count += 1
 
 
+class State(enum.Enum):
+    BOOTED = "booted"
+    NONE = "none"
+    ROOTED = "rooted"
+    STARTING = "starting"
+    STOCK_BOOTED = "stock-booted"
+    STOCK_FASTBOOT = "stock-fastboot"
+    V1_FASTBOOT = "v1-fastboot"
+    V1_TWRP = "v1-twrp"
+    V2_FASTBOOT = "v2-fastboot"
+    V2_TWRP = "v2-twrp"
+
+
 def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
     if PROGRESS.halt():
         print()
-    if ARGS.shown not in {None, "error"}:
+    if ARGS.shown not in {None, Kind.ERROR}:
         print()
-    ARGS.shown = "error"
+    ARGS.shown = Kind.ERROR
     text = prefix + message
     if "\n" not in text:
         text = textwrap.fill(text, 79)
     if prefix and color(sys.stderr):
-        text = f"\033[31m{text}\033[0m"
+        text = f"\033[{ANSIColor.RED.value}m{text}\033[0m"
     raise SystemExit(text)
 
 
@@ -491,7 +519,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                 _die(message=failure)
         elif ARGS.short:
             say(
-                code=33,
+                code=ANSIColor.YELLOW,
                 text="Short the Dot's test point and plug it in. The run waits for"
                 " its bootrom, then says when the short may come off.",
             )
@@ -514,7 +542,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                     f"Short {missed} missed: the Dot started normally. Unplug, short,"
                     " and plug it in again."
                 )
-                show(kind="warn", text=paint(code=31, text=said))
+                show(kind=Kind.WARN, text=paint(code=ANSIColor.RED, text=said))
                 status("Waiting for the bootrom.")
             if text.count("Cannot open") > unopened:
                 unopened = text.count("Cannot open")
@@ -565,7 +593,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
     ERASED.unlink(missing_ok=True)
     for _ in range(30):
         try:
-            if in_fastboot() and getvar("lk_build_desc") == LK_V1:
+            if in_fastboot() and getvar("lk_build_desc") == LK.V1.value:
                 break
         except subprocess.TimeoutExpired:
             pass
@@ -753,7 +781,7 @@ def downgrade(*, from_twrp: bool) -> None:
             message="the Dot did not report its bootloader version;"
             " boot0 was not erased. Run dot_root.py again."
         )
-    if lk == LK_V1:
+    if lk == LK.V1.value:
         _die(
             message="the Dot already runs amonet v1.1.0's bootloader."
             " Run dot_root.py again."
@@ -800,7 +828,7 @@ def fastbrick() -> None:
             " the Dot was not modified"
         )
     image = "bin/fastbrick.img"
-    if lk == LK_V2:
+    if lk == LK.V2.value:
         image = "bin/fastbrick-20221007.img"
     PROGRESS.begin(estimate="10 s", label="unlocking with amonet v2.0.0", step=1)
     for attempt in range(10):
@@ -1073,29 +1101,31 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             message="this fastboot has no -S option: install a newer"
             " Android platform-tools"
         )
-    done = set()
+    done: set[State] = set()
     guided = False
+    resumed = False
     seen = None
     shown = None
     deadline = None
     while True:
         current = state()
-        if DOWNLOADER.ident is None and current not in {"booted", "rooted", "starting"}:
+        if DOWNLOADER.ident is None and current not in {
+            State.BOOTED,
+            State.ROOTED,
+            State.STARTING,
+        }:
             DOWNLOADER.start()
-        if current not in {"none", "starting"}:
+        if current not in {State.NONE, State.STARTING}:
             ERASED.unlink(missing_ok=True)
-        if current != "none":
+        if current != State.NONE:
             ARGS.short = False
-        if (
-            current == "none"
-            and (ERASED.exists() or ARGS.short)
-            and "bootrom" not in done
-        ):
+        if current == State.NONE and (ERASED.exists() or ARGS.short) and not resumed:
             prefetch()
-            done.update(("bootrom", "v1-fastboot"))
+            resumed = True
+            done.add(State.V1_FASTBOOT)
             if not ARGS.short:
                 say(
-                    code=33,
+                    code=ANSIColor.YELLOW,
                     text="The last run stopped during the downgrade to amonet"
                     " v1.1.0. The Dot cannot start until the downgrade is done,"
                     " so this run finishes it.",
@@ -1119,20 +1149,24 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             deadline = time.monotonic() + WAIT
             if ARGS.verbose and current != shown:
                 shown = current
-                show(text=f"{clock()} state: {current}")
-            if current not in done and current not in {"none", "starting", "booted"}:
+                show(text=f"{clock()} state: {current.value}")
+            if current not in done and current not in {
+                State.NONE,
+                State.STARTING,
+                State.BOOTED,
+            }:
                 PROGRESS.end()
-            if current == "booted" and not PROGRESS.open:
+            if current == State.BOOTED and not PROGRESS.open:
                 show(text="The Dot is starting Fire OS. Waiting for it to finish.")
-            elif current == "stock-booted":
+            elif current == State.STOCK_BOOTED:
                 guided = True
                 say(
                     text="This Dot appears to be unmodified. To unlock and root it,"
                     " start it in fastboot mode. " + FASTBOOT_MODE
                 )
-            elif current == "none" and not done and guided:
+            elif current == State.NONE and not done and guided:
                 show(text="Waiting for the Dot in fastboot mode, with a green ring.")
-            elif current == "none" and not done:
+            elif current == State.NONE and not done:
                 guided = True
                 say(
                     text="Waiting for a Dot on USB. Connect it with a USB cable."
@@ -1140,7 +1174,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     + FASTBOOT_MODE
                     + " Ctrl-C stops the script."
                 )
-        if current == "rooted":
+        if current == State.ROOTED:
             hide_updater()
             version = rshell(command="getprop ro.build.version.name")
             selinux = rshell(command="getenforce")
@@ -1148,16 +1182,24 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             warn("Install overdub with deploy/install.py <name>.")
             cache_note()
             return
-        if current in done or current in {"none", "stock-booted", "booted", "starting"}:
-            if current not in {"none", "stock-booted"} and time.monotonic() > deadline:
-                if current == "booted":
+        if current in done or current in {
+            State.NONE,
+            State.STOCK_BOOTED,
+            State.BOOTED,
+            State.STARTING,
+        }:
+            if (
+                current not in {State.NONE, State.STOCK_BOOTED}
+                and time.monotonic() > deadline
+            ):
+                if current == State.BOOTED:
                     _die(
                         message="Fire OS has not finished booting with root."
                         " Reboot to recovery and run dot_root.py again."
                     )
                 _die(
-                    message=f"the Dot has been {current} for {WAIT // 60} minutes."
-                    " Run dot_root.py again."
+                    message=f"the Dot has been {current.value} for"
+                    f" {WAIT // 60} minutes. Run dot_root.py again."
                 )
             time.sleep(2)
             continue
@@ -1165,17 +1207,17 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             prefetch()
             warn("Keep the Dot plugged in until dot_root.py finishes.")
         done.add(current)
-        if current == "stock-fastboot":
+        if current == State.STOCK_FASTBOOT:
             fastbrick()
-        elif current == "v2-twrp":
+        elif current == State.V2_TWRP:
             downgrade(from_twrp=True)
-            done.update(("v2-fastboot", "v1-fastboot"))
-        elif current == "v2-fastboot":
+            done.update((State.V2_FASTBOOT, State.V1_FASTBOOT))
+        elif current == State.V2_FASTBOOT:
             downgrade(from_twrp=False)
-            done.update(("v2-twrp", "v1-fastboot"))
-        elif current == "v1-fastboot":
+            done.update((State.V2_TWRP, State.V1_FASTBOOT))
+        elif current == State.V1_FASTBOOT:
             v1_recovery()
-        elif current == "v1-twrp":
+        elif current == State.V1_TWRP:
             install_fireos()
         seen = None
 
@@ -1220,8 +1262,8 @@ def on_usb(line: str) -> bool:
     )
 
 
-def paint(*, code: int, text: str) -> str:
-    return f"\033[{code}m{text}\033[0m" if color(sys.stdout) else text
+def paint(*, code: ANSIColor, text: str) -> str:
+    return f"\033[{code.value}m{text}\033[0m" if color(sys.stdout) else text
 
 
 def prebuild() -> None:
@@ -1252,44 +1294,44 @@ def prefetch() -> None:
     threading.Thread(daemon=True, target=prebuild).start()
 
 
-def probe() -> str:  # ruff: ignore[complex-structure, too-many-return-statements, too-many-branches]
+def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-statements, too-many-branches]
     if in_fastboot():
         unlock = getvar("unlock_status").lower()
         if unlock == "false":
-            return "stock-fastboot"
+            return State.STOCK_FASTBOOT
         if unlock != "true":
-            return "starting"
+            return State.STARTING
         lk = getvar("lk_build_desc")
         if not lk:
-            return "starting"
-        if lk == LK_V1:
-            return "v1-fastboot"
-        return "v2-fastboot"
+            return State.STARTING
+        if lk == LK.V1.value:
+            return State.V1_FASTBOOT
+        return State.V2_FASTBOOT
     if not usb_serial():
-        return "none"
+        return State.NONE
     adb_state = run(args=["adb", "get-state"], timeout=30).stdout
     if "unauthorized" in adb_state:
-        return "stock-booted"
+        return State.STOCK_BOOTED
     adb_state = adb_state.strip()
     if adb_state == "recovery":
         version = rshell(command="getprop ro.twrp.version", timeout=30)
         if not version[:1].isdigit():
-            return "starting"
+            return State.STARTING
         if version.startswith("3.2."):
             if "mtp" not in rshell(command="getprop sys.usb.config", timeout=30):
-                return "starting"
-            return "v1-twrp"
-        return "v2-twrp"
+                return State.STARTING
+            return State.V1_TWRP
+        return State.V2_TWRP
     if adb_state == "device":
         booted = rshell(command="getprop sys.boot_completed", timeout=30) == "1"
         if booted and "uid=0" in rshell(command="su -c id", timeout=30):
-            return "rooted"
+            return State.ROOTED
         if rshell(command="getprop ro.build.version.name", timeout=30).startswith(
             "Fire OS 6"
         ):
-            return "stock-booted"
-        return "booted"
-    return "none"
+            return State.STOCK_BOOTED
+        return State.BOOTED
+    return State.NONE
 
 
 def push_checked(*, local: pathlib.Path, remote: str | pathlib.PurePosixPath) -> None:
@@ -1408,10 +1450,10 @@ def save(
     return done, total
 
 
-def say(*, code: int = 0, text: str) -> None:
+def say(*, code: ANSIColor | None = None, text: str) -> None:
     text = textwrap.fill(text, 79)
     show(
-        kind="warn" if code else "info",
+        kind=Kind.WARN if code else Kind.INFO,
         text=paint(code=code, text=text) if code else text,
     )
 
@@ -1424,7 +1466,7 @@ def sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def show(*, kind: str = "info", text: str, **options: str | bool) -> None:
+def show(*, kind: Kind = Kind.INFO, text: str, **options: str | bool) -> None:
     if ARGS.shown not in {None, kind}:
         print()
     ARGS.shown = kind
@@ -1438,12 +1480,12 @@ def since(start: float) -> str:
     return f"{seconds // 60}m {seconds % 60:02d}s"
 
 
-def state() -> str:
+def state() -> State:
     ARGS.probing = True
     try:
         current = probe()
     except subprocess.TimeoutExpired:
-        current = "starting"
+        current = State.STARTING
     finally:
         ARGS.probing = False
     return current
@@ -1454,8 +1496,8 @@ def status(text: str) -> None:
         show(
             end="",
             flush=True,
-            kind="warn",
-            text="\r" + paint(code=33, text=text.ljust(79)),
+            kind=Kind.WARN,
+            text="\r" + paint(code=ANSIColor.YELLOW, text=text.ljust(79)),
         )
     else:
         warn(text)
@@ -1552,7 +1594,9 @@ def v2_payload() -> pathlib.Path:
 
 
 def warn(text: str) -> None:
-    show(kind="warn", text=paint(code=33, text=textwrap.fill(text, 79)))
+    show(
+        kind=Kind.WARN, text=paint(code=ANSIColor.YELLOW, text=textwrap.fill(text, 79))
+    )
 
 
 PROGRESS = Progress()
