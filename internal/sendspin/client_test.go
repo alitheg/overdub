@@ -151,12 +151,12 @@ func TestServeTakesAConnectionThroughToClientState(t *testing.T) {
 		t.Error("supported_commands must be present, and it is what a server reads to see" +
 			" whether the delay can be set at all")
 	}
-	if state.Player.StaticDelayMS != 0 {
-		t.Errorf("static_delay_ms = %d, want 0 until a server sets one: it is the delay"+
+	if state.Player.OutputDelayMS != 0 {
+		t.Errorf("output_delay_ms = %d, want 0 until a server sets one: it is the delay"+
 			" *past* this device's audio port, which a Dot with one speaker does not"+
 			" have, so nothing here declares a figure of its own. The delay inside the"+
 			" Dot is ours to compensate for by asking the player where its audio has"+
-			" reached, not to declare here", state.Player.StaticDelayMS)
+			" reached, not to declare here", state.Player.OutputDelayMS)
 	}
 }
 
@@ -304,7 +304,7 @@ func TestClientStateIsExactlyThisOnTheWire(t *testing.T) {
 		t.Fatalf("marshalEnvelope: %v", err)
 	}
 	const want = `{"type":"client/state","payload":{"available":false,` +
-		`"player":{"static_delay_ms":0,"required_lead_time_ms":0,` +
+		`"player":{"output_delay_ms":0,"required_lead_time_ms":0,` +
 		`"min_buffer_ms":500,"supported_commands":[]}}}`
 	if string(got) != want {
 		t.Errorf("client/state is\n%s\nwant\n%s", got, want)
