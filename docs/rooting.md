@@ -75,9 +75,9 @@ stops when the Dot is rooted.
   code page.
 - A finished line is at most 79 columns, so it does not wrap on an 80-column
   terminal. That caps a stage label at 36 characters.
-- Each stage is numbered by its place in a root from stock, `[ 1/10]` to
-  `[10/10]`. A run that starts part way starts part way through the count. The
-  resume after a stopped bootrom step shows both of its stages as `[ 3/10]`,
+- Each stage is numbered by its place in a root from stock, `[1/9]` to
+  `[9/9]`. A run that starts part way starts part way through the count. The
+  resume after a stopped bootrom step shows both of its stages as `[3/9]`,
   the downgrade they finish.
 - Each stage's estimate is an upper bound: the slowest time measured for it,
   rounded up to the next 5 seconds, over roots on macOS and Windows 11. One
@@ -286,10 +286,6 @@ ring read white.
 - TWRP's `adb shell` exit status is unreliable. So each device-side step is a
   pushed script that ends by printing `root-step-ok`, which the script checks.
   The pushed scripts have `\n` line endings on every host.
-- `twrp install` exits 0 and prints `Done processing script file` whether the
-  zip installed or not, and can lose every other line. So each install reads
-  the new part of `/tmp/recovery.log` for `Updater process ended with RC=0`,
-  which TWRP logs only when the zip's installer succeeds.
 - TWRP 3.2.3 has no `twrp format data`. userdata is formatted with
   `mke2fs -t ext4 -b 4096 <userdata> <blocks - 256>`, which leaves 1 MiB for
   the crypto footer. busybox's fstab has no type, so the mount is
@@ -301,7 +297,7 @@ ring read white.
   7.0 MB/s. The other 3 cores made no difference. So the userdata script sets
   the governor first.
 - Never `umount -a` in TWRP: it unmounts `/proc`.
-- Every image, zip and database push is read back by md5 on the device.
+- Every push is read back by md5 on the device.
 - amonet v2.0.0's TWRP 3.7.0 moves 11.9 MB/s, but v1.1.0's LK cannot start
   it. Its kernel is 32-bit ARM (`bootopt` ends `32N2`), and v1.1.0's chain
   starts a 64-bit one. Flashed to `recovery`, it left the Dot without USB for
@@ -331,15 +327,32 @@ ring read white.
 
 ## The boot image
 
-- Magisk 17.3's `arm/magiskboot` is dynamically linked. `/system` is mounted
-  first, and `LD_LIBRARY_PATH=/system/lib` is set on the magiskboot calls
-  only. Set globally, it breaks TWRP's 64-bit tools.
+- The host builds it from the zip's `boot.img` and Magisk 17.3's zip, in
+  about 2 s. Nothing runs magiskboot or Magisk's installer.
 - The ramdisk loses `verify` from every fstab, and `default.prop` gets
   `ro.secure=0`, `ro.debuggable=1` and `persist.sys.usb.config=mtp,adb`.
 - The cmdline is the 512-byte header field at offset 64. Stock is
   `bootopt=64S3,32N2,64N2`; the script appends
   ` androidboot.selinux=permissive`.
-- The patched image is padded to a 4096-byte multiple and written with `dd`.
+- Then Magisk's patch, as its `boot_patch.sh` does it with `KEEPVERITY` and
+  `KEEPFORCEENCRYPT` false. `init` becomes `magiskinit` and `verity_key`
+  goes; both originals go into `.backup`, with `.magisk`. In the kernel,
+  `skip_initramfs` becomes `want_initramfs`.
+- Magisk's installer also kept a gzipped copy of the image as it found it,
+  `/data/stock_boot_<sha1>.img.gz`, and named it in `.backup/.sha1`. Only
+  Magisk Manager's image restore reads them, and `dot_restore_stock.py` is
+  the way back to stock here, so neither is written.
+- The kernel is a 512-byte MTK header, a gzip stream and the dtb. Only the
+  stream and the header's size field change. The ramdisk's cpio is written as
+  magiskboot writes one: sorted, inodes from 300000, every mtime 0.
+- The stock image ends in a 2,048-byte signature. It is dropped, as magiskboot
+  dropped it: the unlocked LK does not check it.
+- Compared with the image that `twrp install` of Magisk wrote on bryce, every
+  header field, the kernel, the dtb and every ramdisk file are the same, except
+  in 3 places. There is no `.backup/.sha1`. 3 symlinks keep their stock modes,
+  where busybox's `cpio` had made them 0777. The MTK header keeps the stock 0xff padding, where
+  magiskboot wrote zeros.
+- The image is padded to a 4096-byte multiple and written with `dd`.
   After `sync` the page cache is dropped, and the partition is read back by
   md5 over the image's length.
 - The host's copies go in a folder under the cache, not in `%TEMP%`. On
@@ -356,8 +369,22 @@ ring read white.
 
 ## Magisk
 
-- Magisk 17.3 installs through `twrp install`, checked against
-  `/tmp/recovery.log` as above.
+- The zip's installer is not run. Its writes go to the Dot as one cpio
+  archive, which TWRP's `cpio` unpacks into `/data`. The files are then read
+  back as one md5, over all of them in name order.
+- `/data/adb/magisk` gets `arm/`, `common/` and `chromeos/` from the zip, mode
+  755, and the installer's busybox: base64 of xz, in `update-binary` as
+  `BB_ARM`.
+- It also gets `magisk`, which `boot_patch.sh` wrote with
+  `magiskinit -x magisk`, and which module installs and `--unlock-blocks` run.
+  It is the xz stream in `magiskinit` that unpacks to an ELF. Unpacked on the
+  host and by `magiskinit -x` on bryce, its md5 is the same. `/sbin/magisk.bin`
+  differs from it in 62 bytes, which magiskinit randomizes at boot.
+- On a new userdata the installer wrote to `/data/magisk`, because
+  `/data/adb` did not exist yet. Magisk's daemon moved it to `/data/adb/magisk`
+  at the first boot. The script writes there directly.
+- The rest of the installer changes nothing on this Dot: there is no
+  `/system/addon.d`, no `su` in `/system`, and nothing in `/data` to migrate.
 - Its database is seeded so the adb shell gets root without a prompt the Dot
   cannot show: `/data/adb/magisk.db`, mode 600, with
   `policies(uid INT, package_name TEXT, policy INT, until INT, logging INT,

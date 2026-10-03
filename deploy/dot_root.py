@@ -12,15 +12,20 @@ there.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import gzip
 import hashlib
 import http.client
+import lzma
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import sqlite3
+import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -29,6 +34,7 @@ import threading
 import time
 import urllib.request
 import zipfile
+import zlib
 from typing import IO, TYPE_CHECKING, BinaryIO, NoReturn, TextIO
 
 if TYPE_CHECKING:
@@ -94,21 +100,6 @@ common.Device.rpmb_read = rpmb_read
 main.flash_data = flash_data
 main.main()
 """
-BOOT_SH = """\
-set -e
-mountpoint -q /system || mount /system
-rm -rf /tmp/bp; mkdir /tmp/bp; cd /tmp/bp; chmod 755 /tmp/magiskboot
-mv /tmp/boot.img boot.img
-LD_LIBRARY_PATH=/system/lib /tmp/magiskboot --unpack boot.img >/dev/null 2>&1
-mkdir r; cd r; cpio -id < ../ramdisk.cpio 2>/dev/null
-for f in fstab*; do sed -i 's/,verify//g; s/verify,//g' "$f"; done
-sed -i -e 's/^ro.secure=1$/ro.secure=0/' -e 's/^ro.debuggable=0$/ro.debuggable=1/' \\
-  -e 's/^persist.sys.usb.config=.*/persist.sys.usb.config=mtp,adb/' default.prop
-find . | cpio -o -H newc > ../ramdisk.cpio 2>/dev/null; cd ..
-LD_LIBRARY_PATH=/system/lib /tmp/magiskboot --repack boot.img new.img >/dev/null 2>&1
-cd /; umount /system
-echo root-step-ok
-"""
 CLEAR_BOOT0 = (
     "d=dd; toybox dd --help >/dev/null 2>&1 && d='toybox dd'; "
     "echo 0 > /sys/block/mmcblk0boot0/force_ro; "
@@ -143,6 +134,14 @@ FIREOS_URL = (
 LK_V1 = "f379dba-20170906_000423"
 LK_V2 = "63cb91b-20221007_072309"
 MAGISK = "Magisk-v17.3.zip"
+MAGISK_SH = """\
+set -e
+mountpoint -q /data
+cd /; cpio -idu < /tmp/magisk.cpio 2>/dev/null
+chmod 700 /data/adb; chmod -R 755 /data/adb/magisk; chmod 600 /data/adb/magisk.db
+sync
+echo root-step-ok
+"""
 MAGISK_SHA = "18e46b16b25ebe691c282fe311beccd4811cd533848a64e2efbd754fb85efde7"
 MAGISK_URL = "https://github.com/topjohnwu/Magisk/releases/download/v17.3/" + MAGISK
 MEGA = 1e6
@@ -201,7 +200,7 @@ for port in list_ports.comports():
             pass
 """
 SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
-STEPS = 10
+STEPS = 9
 SYSTEM = "/dev/block/other-system"
 
 SYSTEM_LOCK = threading.Lock()
@@ -249,8 +248,8 @@ class Progress:
     def begin(self, *, estimate: str = "", label: str, step: int) -> None:
         self.end()
         about = f"(~{estimate})" if estimate else ""
-        self.line = f"[{step:2d}/{STEPS}] {label:<36} {about:<8} "
-        delay(f"[{step:2d}/{STEPS}] {label}")
+        self.line = f"[{step}/{STEPS}] {label:<36} {about:<8} "
+        delay(f"[{step}/{STEPS}] {label}")
         self.ts = time.monotonic()
         self.open = True
         if ARGS.verbose or not sys.stdout.isatty():
@@ -317,6 +316,61 @@ def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
     if prefix and color(sys.stderr):
         text = f"\033[31m{text}\033[0m"
     raise SystemExit(text)
+
+
+def boot_image(*, fireos: pathlib.Path, magisk: pathlib.Path) -> bytes:
+    with zipfile.ZipFile(fireos) as z:
+        stock = z.read("boot.img")
+    with zipfile.ZipFile(magisk) as z:
+        magiskinit = z.read("arm/magiskinit")
+    kernel_size, ramdisk_size, page = (
+        struct.unpack_from("<I", stock, offset)[0] for offset in (8, 16, 36)
+    )
+    header = bytearray(stock[:page])
+    cmdline = bytes(header[64:576]).split(b"\0")[0]
+    header[64:576] = (cmdline + b" androidboot.selinux=permissive").ljust(
+        CMDLINE_SIZE, b"\0"
+    )
+    kernel = stock[page : page + kernel_size]
+    start = page + -(-kernel_size // page) * page
+    files = cpio_files(gzip.decompress(stock[start : start + ramdisk_size]))
+    mode, prop = files[b"default.prop"]
+    prop = re.sub(rb"(?m)^ro\.secure=1$", b"ro.secure=0", prop)
+    prop = re.sub(rb"(?m)^ro\.debuggable=0$", b"ro.debuggable=1", prop)
+    prop = re.sub(
+        rb"(?m)^persist\.sys\.usb\.config=.*", b"persist.sys.usb.config=mtp,adb", prop
+    )
+    files[b"default.prop"] = (mode, prop)
+    for name, (mode, body) in files.items():
+        if name.startswith(b"fstab"):
+            files[name] = (mode, body.replace(b",verify", b"").replace(b"verify,", b""))
+    files[b".backup"] = (0o40000, b"")
+    files[b".backup/.magisk"] = (
+        0o100000,
+        b"KEEPVERITY=false\nKEEPFORCEENCRYPT=false\n\0",
+    )
+    files[b".backup/init"] = files[b"init"]
+    files[b".backup/verity_key"] = files.pop(b"verity_key")
+    files[b"init"] = (0o100750, magiskinit)
+    return boot_pack(
+        header=header,
+        kernel=magisk_kernel(kernel),
+        ramdisk=gzip.compress(cpio(files), compresslevel=9, mtime=0),
+    )
+
+
+def boot_pack(*, header: bytes | bytearray, kernel: bytes, ramdisk: bytes) -> bytes:
+    page = len(header)
+    sizes = struct.pack("<I", len(kernel)), struct.pack("<I", len(ramdisk))
+    out = bytearray(header)
+    out[8:12], out[16:20] = sizes
+    digest = hashlib.sha1(
+        kernel + sizes[0] + ramdisk + sizes[1] + bytes(4), usedforsecurity=False
+    )
+    out[576:608] = digest.digest().ljust(32, b"\0")
+    for part in (kernel, ramdisk):
+        out += part.ljust(-(-len(part) // page) * page, b"\0")
+    return bytes(out)
 
 
 def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
@@ -505,6 +559,33 @@ def color(stream: TextIO) -> bool:
     if os.name == "nt" and "WT_SESSION" not in os.environ:
         return False
     return stream.isatty()
+
+
+def cpio(files: dict[bytes, tuple[int, bytes]]) -> bytes:
+    out = bytearray()
+    for inode, name in enumerate([*sorted(files), b"TRAILER!!!"], start=300000):
+        mode, body = files.get(name, (0, b""))
+        fields = (inode, mode, 0, 0, 1, 0, len(body), 0, 0, 0, 0, len(name) + 1, 0)
+        out += b"070701" + b"".join(b"%08x" % field for field in fields) + name + b"\0"
+        out += bytes(-len(out) % 4) + body
+        out += bytes(-len(out) % 4)
+    return bytes(out)
+
+
+def cpio_files(data: bytes) -> dict[bytes, tuple[int, bytes]]:
+    files = {}
+    at = 0
+    while True:
+        if data[at : at + 6] != b"070701":
+            _die(message=f"{FIREOS}'s ramdisk is not a newc cpio archive")
+        fields = [int(data[at + 6 + 8 * i : at + 14 + 8 * i], 16) for i in range(13)]
+        name = data[at + 110 : at + 109 + fields[11]]
+        at = (at + 110 + fields[11] + 3) & ~3
+        body = data[at : at + fields[6]]
+        at = (at + fields[6] + 3) & ~3
+        if name == b"TRAILER!!!":
+            return files
+        files[name] = (fields[1], body)
 
 
 def delay(label: str) -> None:
@@ -715,28 +796,14 @@ def install_fireos() -> None:
             estimate="100 s", label="writing Fire OS 5.5.5.4's /system", step=6
         )
         write_system()
+        if not rscript(body=SYSTEM_SH, name="system.sh", work=work):
+            _die(message="patching /system failed")
 
-        PROGRESS.begin(estimate="20 s", label="patching the boot image", step=7)
-        stock = work / "stock-boot.img"
-        with zipfile.ZipFile(fireos) as z:
-            stock.write_bytes(z.read("boot.img"))
-        push_checked(local=stock, remote=DOT_TMP / "boot.img")
-        magiskboot = work / "magiskboot"
-        with zipfile.ZipFile(magisk) as z:
-            magiskboot.write_bytes(z.read("arm/magiskboot"))
-        push_checked(local=magiskboot, remote=DOT_TMP / "magiskboot")
-        if not rscript(body=BOOT_SH, name="boot.sh", work=work):
-            _die(message="patching the boot image failed")
+        PROGRESS.begin(estimate="5 s", label="writing the boot image", step=7)
+        data = boot_image(fireos=fireos, magisk=magisk)
         boot = work / "boot.img"
-        run(
-            args=["adb", "pull", DOT_TMP / "bp" / "new.img", boot],
-            check=True,
-            timeout=120,
-        )
-        patch_cmdline(boot)
-        data = boot.read_bytes()
         boot.write_bytes(data.ljust(-(-len(data) // 4096) * 4096, b"\0"))
-        final = DOT_TMP / "bp" / "final.img"
+        final = DOT_TMP / "boot.img"
         push_checked(local=boot, remote=final)
         rshell(
             command=f"dd if={final} of=/dev/block/other-boot bs=1048576 2>/dev/null;"
@@ -755,23 +822,42 @@ def install_fireos() -> None:
                 f" {written or 'nothing'}, expected {want}"
             )
 
-        PROGRESS.begin(estimate="5 s", label="patching /system", step=8)
-        if not rscript(body=SYSTEM_SH, name="system.sh", work=work):
-            _die(message="patching /system failed")
-
-        PROGRESS.begin(estimate="25 s", label="installing Magisk 17.3", step=9)
-        magisk_zip = DOT_TMP / "magisk.zip"
-        push_checked(local=magisk, remote=magisk_zip)
-        twrp_install(name="Magisk 17.3", path=magisk_zip)
-        db = work / "magisk.db"
-        magisk_db(db)
-        rshell(command="mkdir -p /data/adb; chmod 700 /data/adb")
-        push_checked(local=db, remote="/data/adb/magisk.db")
-        rshell(command="chmod 600 /data/adb/magisk.db; sync")
+        PROGRESS.begin(estimate="5 s", label="installing Magisk 17.3", step=8)
+        install_magisk(magisk=magisk, work=work)
     PROGRESS.begin(
-        estimate="4 min", label="waiting for rooted Fire OS 5 to boot", step=10
+        estimate="4 min", label="waiting for rooted Fire OS 5 to boot", step=9
     )
     run(args=["adb", "reboot"])
+
+
+def install_magisk(*, magisk: pathlib.Path, work: pathlib.Path) -> None:
+    db = work / "magisk.db"
+    magisk_db(db)
+    files = magisk_files(db=db.read_bytes(), magisk=magisk)
+    archive = work / "magisk.cpio"
+    archive.write_bytes(cpio(files))
+    push_checked(local=archive, remote=DOT_TMP / "magisk.cpio")
+    if not rscript(body=MAGISK_SH, name="magisk.sh", work=work):
+        _die(message="Magisk 17.3 did not install")
+    names = sorted(name for name, (mode, _) in files.items() if stat.S_ISREG(mode))
+    want = hashlib.md5(
+        b"".join(files[name][1] for name in names), usedforsecurity=False
+    ).hexdigest()
+    paths = " ".join(name.decode() for name in names)
+    got = rshell(command=f"cd /; cat {paths} | md5sum").split("\n")[-1].split(" ")[0]
+    if got != want:
+        _die(message="Magisk 17.3's files did not verify on the Dot")
+
+
+def magisk_binary(magiskinit: bytes) -> bytes:
+    at = magiskinit.find(b"\xfd7zXZ\0")
+    while at != -1:
+        with contextlib.suppress(lzma.LZMAError):
+            binary = lzma.LZMADecompressor().decompress(magiskinit[at:])
+            if binary.startswith(b"\x7fELF"):
+                return binary
+        at = magiskinit.find(b"\xfd7zXZ\0", at + 1)
+    _die(message=f"{MAGISK}'s magiskinit holds no magisk binary")
 
 
 def magisk_db(path: pathlib.Path) -> None:
@@ -783,6 +869,46 @@ def magisk_db(path: pathlib.Path) -> None:
     db.execute("INSERT INTO policies VALUES (2000, 'com.android.shell', 2, 0, 1, 0)")
     db.commit()
     db.close()
+
+
+def magisk_files(*, db: bytes, magisk: pathlib.Path) -> dict[bytes, tuple[int, bytes]]:
+    files = {
+        b"data/adb": (0o40700, b""),
+        b"data/adb/magisk": (0o40755, b""),
+        b"data/adb/magisk/chromeos": (0o40755, b""),
+        b"data/adb/magisk.db": (0o100600, db),
+    }
+    with zipfile.ZipFile(magisk) as z:
+        for info in z.infolist():
+            folder, _, name = info.filename.partition("/")
+            if folder in {"arm", "common"}:
+                path = name
+            elif folder == "chromeos":
+                path = info.filename
+            else:
+                continue
+            files[f"data/adb/magisk/{path}".encode()] = (0o100755, z.read(info))
+        script = z.read("META-INF/com/google/android/update-binary").decode()
+    packed = re.search(r"^BB_ARM=(\S+)", script, re.MULTILINE)
+    if not packed:
+        _die(message=f"{MAGISK} has no busybox in its installer")
+    files[b"data/adb/magisk/busybox"] = (
+        0o100755,
+        lzma.decompress(base64.b64decode(packed.group(1))),
+    )
+    files[b"data/adb/magisk/magisk"] = (
+        0o100755,
+        magisk_binary(files[b"data/adb/magisk/magiskinit"][1]),
+    )
+    return files
+
+
+def magisk_kernel(kernel: bytes) -> bytes:
+    stream = zlib.decompressobj(31)
+    image = stream.decompress(kernel[512:])
+    image = image.replace(b"skip_initramfs\0", b"want_initramfs\0")
+    body = gzip.compress(image, compresslevel=9, mtime=0) + stream.unused_data
+    return kernel[:4] + struct.pack("<I", len(body)) + kernel[8:512] + body
 
 
 def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
@@ -961,19 +1087,6 @@ def on_usb(line: str) -> bool:
 
 def paint(*, code: int, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if color(sys.stdout) else text
-
-
-def patch_cmdline(path: pathlib.Path) -> None:
-    data = bytearray(path.read_bytes())
-    if data[:8] != b"ANDROID!":
-        _die(message="the patched boot image is not a boot image")
-    cmdline = bytes(data[64:576]).split(b"\0")[0]
-    if b"androidboot.selinux=permissive" not in cmdline:
-        cmdline = (cmdline + b" androidboot.selinux=permissive").strip()
-    if len(cmdline) >= CMDLINE_SIZE:
-        _die(message="the boot cmdline is too long")
-    data[64:576] = cmdline.ljust(512, b"\0")
-    path.write_bytes(data)
 
 
 def prebuild() -> None:
@@ -1224,18 +1337,6 @@ def system_image() -> tuple[pathlib.Path, str, int]:
             build_system(target)
     want, blocks = (target / "md5").read_text().split()
     return target / "system.img.gz", want, int(blocks)
-
-
-def twrp_install(*, name: str, path: str | pathlib.PurePosixPath) -> None:
-    recovery_log = DOT_TMP / "recovery.log"
-    log = rshell(
-        command=f"n=$(wc -l < {recovery_log}); twrp install {path} >/dev/null;"
-        f" tail -n +$((n + 1)) {recovery_log}",
-        timeout=900,
-    )
-    if "Updater process ended with RC=0" not in log:
-        tail = "\n".join(log.split("\n")[-15:])
-        _die(message=f"{name} did not install. TWRP's log ends:\n{tail}")
 
 
 def unpack(*, dirname: str, name: str, url: str, want: str) -> pathlib.Path:
