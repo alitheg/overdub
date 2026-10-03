@@ -71,6 +71,7 @@ sudo groupadd -f plugdev
 sudo tee /etc/udev/rules.d/51-echo-dot.rules >/dev/null <<'EOF'
 SUBSYSTEM=="usb", ATTR{idVendor}=="1949", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="4ee2", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="d001", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="0bb4", ATTR{idProduct}=="0c01", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
@@ -609,7 +610,10 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         if not version[:1].isdigit():
             version = ""
         elif not version.startswith(TWRP_VERSIONS):
-            _die(message="this needs amonet's TWRP: v1.1.0's 3.2.3 or v2.0.0's 3.7.0")
+            _die(
+                message="this needs a TWRP for this Dot: v1.1.0's 3.2.3,"
+                " v2.0.0's 3.7.0, or the 3.7.0_9-bboe1 that dot_root.py installs"
+            )
     if (
         rshell(command="toybox dd --help >/dev/null 2>&1 && echo yes").split("\n")[-1]
         == "yes"
@@ -1096,9 +1100,10 @@ def write(  # ruff: ignore[too-many-arguments]
             progress.fail(
                 f"{label} did not reach the Dot; do not reboot:\n{pushed.stdout}"
             )
+        notrunc = " conv=notrunc" if ARGS.dd == "toybox dd" else ""
         done = rshell(
             command=f"{ARGS.dd} if={staged} of={DISK} bs={bs} seek={offset}"
-            f" && rm -f {staged} && echo written"
+            f"{notrunc} && rm -f {staged} && echo written"
         )
         if done.split("\n")[-1] != "written":
             progress.fail(f"{label} failed; do not reboot:\n{done}")

@@ -156,6 +156,7 @@ main.flash_data = flash_data
 main.load_payload = load_payload
 main.main()
 """
+BY_NAME = "/dev/block/platform/mtk-msdc.0/by-name"
 CLEAR_BOOT0 = (
     "d=dd; toybox dd --help >/dev/null 2>&1 && d='toybox dd'; "
     "echo 0 > /sys/block/mmcblk0boot0/force_ro; "
@@ -167,15 +168,13 @@ CLEAR_BOOT0 = (
     " | tr -d '\\0' | wc -c)\""
 )
 CMDLINE_SIZE = 512
-DATA_SH = """\
+DATA_SH = f"""\
 set -e
-echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor || true
-umount /data /sdcard 2>/dev/null || true
-d=/dev/block/platform/mtk-msdc.0/by-name/userdata
+umount /sdcard /data 2>/dev/null || true
+d={BY_NAME}/userdata
 mke2fs -q -t ext4 -b 4096 "$d" $(( $(blockdev --getsize64 "$d") / 4096 - 256 ))
 mount -t ext4 "$d" /data
 mountpoint -q /data
-echo root-step-ok
 """
 DOT_TMP = pathlib.PurePosixPath("/tmp")  # ruff: ignore[hardcoded-temp-file]
 FASTBOOT_MODE = (
@@ -187,6 +186,7 @@ FIREOS_SHA = "6ababc517529938f0d1e836c3410a91df19683ae62d7fca9e2ca57320d5d2faa"
 FIREOS_URL = (
     "https://d1s31zyz7dcc2d.cloudfront.net/47a1457e0802980eb32f63cd3ce355c0/" + FIREOS
 )
+LK_DESC = re.compile(r"[0-9a-f]{7}-\d{8}_\d{6}")
 MAGISK = "Magisk-v17.3.zip"
 MAGISK_SH = """\
 set -e
@@ -194,7 +194,6 @@ mountpoint -q /data
 cd /; cpio -idu < /tmp/magisk.cpio 2>/dev/null
 chmod 700 /data/adb; chmod -R 755 /data/adb/magisk; chmod 600 /data/adb/magisk.db
 sync
-echo root-step-ok
 """
 MAGISK_SHA = "18e46b16b25ebe691c282fe311beccd4811cd533848a64e2efbd754fb85efde7"
 MAGISK_URL = "https://github.com/topjohnwu/Magisk/releases/download/v17.3/" + MAGISK
@@ -215,6 +214,7 @@ sudo groupadd -f plugdev
 sudo tee /etc/udev/rules.d/51-echo-dot.rules >/dev/null <<'EOF'
 SUBSYSTEM=="usb", ATTR{idVendor}=="1949", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="4ee2", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="d001", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="0bb4", ATTR{idProduct}=="0c01", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
@@ -229,10 +229,6 @@ Then run it again with the new group, which a new login also has:
 """  # ruff: ignore[line-too-long]
 PUSH_TRIES = 3
 PYSERIAL = "pyserial-3.5-py2.py3-none-any.whl"
-LOCKS = {
-    name: threading.Lock()
-    for name in (AMONET_V1, AMONET_V2, FIREOS, MAGISK, PYSERIAL, "v1", "v2")
-}
 PYSERIAL_SHA = "c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0"
 
 PYSERIAL_URL = (
@@ -256,9 +252,35 @@ for port in list_ports.comports():
 SHORT_WAIT = 5
 SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 STEPS = 9
-SYSTEM = "/dev/block/other-system"
-
 SYSTEM_LOCK = threading.Lock()
+SYSTEM_SH = """\
+set -e
+m=/tmp/fireos-system
+mkdir -p $m
+mountpoint -q $m || mount -t ext4 {system} $m
+f=$m/etc/init.fosflags.sh
+sed -i 's/if \\[ $(( $FOS_FLAGS_ADB_ON & $FOSFLAGS )) != 0 \\]; then/if true; then/; \
+s/^\\( *\\)unset_adb_persistent_property$/\\1true/' "$f"
+for h in {hosts}; do
+  grep -q " $h\\$" $m/etc/hosts || echo "127.0.0.1 $h" >> $m/etc/hosts
+done
+grep -q 'if true; then' "$f"
+grep -q '^ *unset_adb_persistent_property$' "$f" && exit 1
+sync; umount $m
+"""
+TWRP_SHA = "10d0b64a4398631953dc2d6821f382eaa6ac9bccff4994f54c9e849c2b781c83"
+
+
+TWRP_VERSION = "3.7.0_9-bboe1"
+TWRP = f"twrp-{TWRP_VERSION}-biscuit.img"
+LOCKS = {
+    name: threading.Lock()
+    for name in (AMONET_V1, AMONET_V2, FIREOS, MAGISK, PYSERIAL, TWRP, "v1", "v2")
+}
+TWRP_URL = (
+    "https://github.com/bboe/twrp_device_amazon_echo-mt8163/releases/download/"
+    f"v{TWRP_VERSION}/twrp-v{TWRP_VERSION}-biscuit.img"
+)
 UPDATER = "com.amazon.device.software.ota"
 UPDATE_HOSTS = (
     "updates.amazon.com",
@@ -266,22 +288,6 @@ UPDATE_HOSTS = (
     "amzndigitaldownloads.edgesuite.net",
     "amzdigital-a.akamaihd.com",
 )
-
-
-SYSTEM_SH = """\
-set -e
-mountpoint -q /system || mount /system
-f=/system/etc/init.fosflags.sh
-sed -i 's/if \\[ $(( $FOS_FLAGS_ADB_ON & $FOSFLAGS )) != 0 \\]; then/if true; then/; \
-s/^\\( *\\)unset_adb_persistent_property$/\\1true/' "$f"
-for h in {}; do
-  grep -q " $h\\$" /system/etc/hosts || echo "127.0.0.1 $h" >> /system/etc/hosts
-done
-grep -q 'if true; then' "$f"
-grep -q '^ *unset_adb_persistent_property$' "$f" && exit 1
-sync; umount /system
-echo root-step-ok
-""".format(" ".join(UPDATE_HOSTS))
 USER_SERIAL = os.environ.get("ANDROID_SERIAL")
 
 
@@ -376,6 +382,9 @@ class Progress:
 
 
 class State(enum.Enum):
+    AMONET_V1_TWRP = "amonet-v1-twrp"
+    AMONET_V2_TWRP = "amonet-v2-twrp"
+    BBOE_V1_TWRP = "bboe-v1-twrp"
     BOOTED = "booted"
     NONE = "none"
     ROOTED = "rooted"
@@ -383,9 +392,7 @@ class State(enum.Enum):
     STOCK_BOOTED = "stock-booted"
     STOCK_FASTBOOT = "stock-fastboot"
     V1_FASTBOOT = "v1-fastboot"
-    V1_TWRP = "v1-twrp"
     V2_FASTBOOT = "v2-fastboot"
-    V2_TWRP = "v2-twrp"
 
 
 def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
@@ -776,7 +783,7 @@ def downgrade(*, from_twrp: bool) -> None:
         if getvar("unlock_status").lower() != "true":
             _die(message="not in amonet's fastboot")
         lk = getvar("lk_build_desc")
-    if not lk:
+    if not LK_DESC.fullmatch(lk):
         _die(
             message="the Dot did not report its bootloader version;"
             " boot0 was not erased. Run dot_root.py again."
@@ -936,6 +943,10 @@ def in_fastboot() -> bool:
 def install_fireos() -> None:
     fireos = fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
     magisk = fetch(name=MAGISK, url=MAGISK_URL, want=MAGISK_SHA)
+    slot = rshell(command="getprop ro.boot.slot_suffix", timeout=30)
+    if slot not in {"_a", "_b"}:
+        _die(message=f"TWRP reports the boot slot {slot!r}, not _a or _b")
+    boot, system = f"{BY_NAME}/boot{slot}_x", f"{BY_NAME}/system{slot}"
     with tempfile.TemporaryDirectory(dir=CACHE) as tmp:
         work = pathlib.Path(tmp)
         PROGRESS.begin(estimate="5 s", label="formatting userdata", step=5)
@@ -944,26 +955,27 @@ def install_fireos() -> None:
         PROGRESS.begin(
             estimate="100 s", label="writing Fire OS 5.5.5.4's /system", step=6
         )
-        write_system()
-        if not rscript(body=SYSTEM_SH, name="system.sh", work=work):
+        write_system(system)
+        body = SYSTEM_SH.format(hosts=" ".join(UPDATE_HOSTS), system=system)
+        if not rscript(body=body, name="system.sh", work=work):
             _die(message="patching /system failed")
 
         PROGRESS.begin(estimate="5 s", label="writing the boot image", step=7)
         data = boot_image(fireos=fireos, magisk=magisk)
-        boot = work / "boot.img"
-        boot.write_bytes(data.ljust(-(-len(data) // 4096) * 4096, b"\0"))
+        image = work / "boot.img"
+        image.write_bytes(data.ljust(-(-len(data) // 4096) * 4096, b"\0"))
         final = DOT_TMP / "boot.img"
-        push_checked(local=boot, remote=final)
+        push_checked(local=image, remote=final)
         rshell(
-            command=f"dd if={final} of=/dev/block/other-boot bs=1048576 2>/dev/null;"
+            command=f"dd if={final} of={boot} bs=1048576 2>/dev/null;"
             " sync; echo 3 > /proc/sys/vm/drop_caches",
             timeout=120,
         )
-        blocks = boot.stat().st_size // 4096
+        blocks = image.stat().st_size // 4096
         read_back = (
-            f"dd if=/dev/block/other-boot bs=4096 count={blocks} 2>/dev/null | md5sum"
+            f"[ -b {boot} ] && dd if={boot} bs=4096 count={blocks} 2>/dev/null | md5sum"
         )
-        want = md5(boot)
+        want = md5(image)
         written = rshell(command=read_back, timeout=120).split("\n")[-1].split(" ")[0]
         if written != want:
             _die(
@@ -1209,15 +1221,17 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         done.add(current)
         if current == State.STOCK_FASTBOOT:
             fastbrick()
-        elif current == State.V2_TWRP:
+        elif current == State.AMONET_V2_TWRP:
             downgrade(from_twrp=True)
             done.update((State.V2_FASTBOOT, State.V1_FASTBOOT))
         elif current == State.V2_FASTBOOT:
             downgrade(from_twrp=False)
-            done.update((State.V2_TWRP, State.V1_FASTBOOT))
+            done.update((State.AMONET_V2_TWRP, State.V1_FASTBOOT))
         elif current == State.V1_FASTBOOT:
             v1_recovery()
-        elif current == State.V1_TWRP:
+        elif current == State.AMONET_V1_TWRP:
+            replace_twrp()
+        elif current == State.BBOE_V1_TWRP:
             install_fireos()
         seen = None
 
@@ -1291,6 +1305,7 @@ def prefetch() -> None:
     fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA)
     fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
     fetch(name=MAGISK, url=MAGISK_URL, want=MAGISK_SHA)
+    fetch(name=TWRP, url=TWRP_URL, want=TWRP_SHA)
     threading.Thread(daemon=True, target=prebuild).start()
 
 
@@ -1315,13 +1330,16 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
     adb_state = adb_state.strip()
     if adb_state == "recovery":
         version = rshell(command="getprop ro.twrp.version", timeout=30)
-        if not version[:1].isdigit():
+        lk = rshell(command="getprop ro.boot.lk_build_desc", timeout=30)
+        if not version[:1].isdigit() or not LK_DESC.fullmatch(lk):
             return State.STARTING
-        if version.startswith("3.2."):
-            if "mtp" not in rshell(command="getprop sys.usb.config", timeout=30):
-                return State.STARTING
-            return State.V1_TWRP
-        return State.V2_TWRP
+        if lk != LK.V1.value:
+            return State.AMONET_V2_TWRP
+        if "mtp" not in rshell(command="getprop sys.usb.config", timeout=30):
+            return State.STARTING
+        if version != TWRP_VERSION:
+            return State.AMONET_V1_TWRP
+        return State.BBOE_V1_TWRP
     if adb_state == "device":
         booted = rshell(command="getprop sys.boot_completed", timeout=30) == "1"
         if booted and "uid=0" in rshell(command="su -c id", timeout=30):
@@ -1370,6 +1388,31 @@ def reconnect(remote: str | pathlib.PurePosixPath) -> None:
     time.sleep(5)
 
 
+def replace_twrp() -> None:
+    twrp = fetch(name=TWRP, url=TWRP_URL, want=TWRP_SHA)
+    PROGRESS.begin(estimate="40 s", label=f"waiting for TWRP {TWRP_VERSION}", step=4)
+    remote = DOT_TMP / TWRP
+    push_checked(local=twrp, remote=remote)
+    recovery = f"{BY_NAME}/recovery"
+    rshell(
+        command=f"dd if={remote} of={recovery} bs=1048576 2>/dev/null;"
+        " sync; echo 3 > /proc/sys/vm/drop_caches",
+        timeout=120,
+    )
+    sectors = twrp.stat().st_size // 512
+    read_back = (
+        f"[ -b {recovery} ] && dd if={recovery} bs=512 count={sectors} 2>/dev/null"
+        " | md5sum"
+    )
+    written = rshell(command=read_back, timeout=120).split("\n")[-1].split(" ")[0]
+    if written != md5(twrp):
+        _die(
+            message=f"TWRP {TWRP_VERSION} did not verify in recovery. Leave the Dot"
+            " running and run dot_root.py again."
+        )
+    run(args=["adb", "reboot", "recovery"], check=True, timeout=60)
+
+
 def rerun() -> str:
     return "sg plugdev -c " + shlex.quote(shlex.join([sys.executable, *sys.argv]))
 
@@ -1380,8 +1423,8 @@ def rscript(*, body: str, name: str, work: pathlib.Path) -> bool:
         f.write(body)
     remote = DOT_TMP / "root-step.sh"
     push_checked(local=local, remote=remote)
-    out = rshell(command=f"sh {remote}; rm -f {remote}", timeout=300)
-    return out.split("\n")[-1] == "root-step-ok"
+    command = f"sh {remote}; s=$?; rm -f {remote}; exit $s"
+    return run(args=["adb", "shell", command], timeout=300).returncode == 0
 
 
 def rshell(*, command: str, timeout: float | None = None) -> str:
@@ -1568,9 +1611,8 @@ def v1_recovery() -> None:
     amonet = unpack(
         dirname="v1", name=AMONET_V1, url=MIRROR + "/" + AMONET_V1, want=AMONET_V1_SHA
     )
-    PROGRESS.begin(
-        estimate="30 s", label="waiting for v1.1.0 recovery to start", step=4
-    )
+    twrp = fetch(name=TWRP, url=TWRP_URL, want=TWRP_SHA)
+    PROGRESS.begin(estimate="30 s", label=f"waiting for TWRP {TWRP_VERSION}", step=4)
     run(
         args=["fastboot", "-S", "256M", "flash", "tee2", "bin/tz.img"],
         check=True,
@@ -1578,9 +1620,8 @@ def v1_recovery() -> None:
         timeout=120,
     )
     run(
-        args=["fastboot", "-S", "256M", "flash", "recovery", "bin/twrp.img"],
+        args=["fastboot", "-S", "256M", "flash", "recovery", twrp],
         check=True,
-        cwd=amonet,
         timeout=120,
     )
     run(args=["fastboot", "oem", "reboot-recovery"], check=True, cwd=amonet, timeout=60)
@@ -1602,42 +1643,28 @@ def warn(text: str) -> None:
 PROGRESS = Progress()
 
 
-def write_system() -> None:  # ruff: ignore[complex-structure]
+def write_system(system: str) -> None:
     image, want, blocks = system_image()
-    status = DOT_TMP / "system-status"
     ready = rshell(
-        command=f"umount /system 2>/dev/null; rm -f {status};"
-        f" [ -b {SYSTEM} ] && ! mountpoint -q /system && echo ready"
+        command="umount /system_root /tmp/fireos-system 2>/dev/null;"
+        f' d=$(readlink -f {system}); [ -b "$d" ]'
+        f' && ! grep -q -e "^$d " -e "^{system} " /proc/mounts && echo ready'
     )
     if ready.split("\n")[-1] != "ready":
-        _die(message=f"{SYSTEM} is not a block device, or /system stayed mounted")
-    stream = f"gunzip -c | dd of={SYSTEM} bs=1048576 2>/dev/null; echo $? > {status}"
+        _die(message=f"{system} is not a block device, or it stayed mounted")
+    stream = f"gunzip -c | dd of={system} bs=1048576 2>/dev/null"
     read_back = (
         "sync; echo 3 > /proc/sys/vm/drop_caches;"
-        f" dd if={SYSTEM} bs=4096 count={blocks} 2>/dev/null | md5sum"
+        f" dd if={system} bs=4096 count={blocks} 2>/dev/null | md5sum"
     )
     for attempt in range(PUSH_TRIES):
         if attempt:
-            reconnect(SYSTEM)
+            reconnect(system)
         try:  # ruff: ignore[too-many-statements-in-try-clause]
-            rshell(command=f"rm -f {status}")
             with image.open("rb") as f:
-                result = run(
-                    args=["adb", "exec-in", "sh -c " + shlex.quote(stream)],
-                    stdin=f,
-                    timeout=600,
-                )
+                result = run(args=["adb", "shell", stream], stdin=f, timeout=600)
             if result.returncode != 0:
-                said = result.stdout
-                continue
-            code = ""
-            for _ in range(60):
-                code = rshell(command=f"cat {status} 2>/dev/null || true")
-                if code:
-                    break
-                time.sleep(1)
-            if code != "0":
-                said = f"dd ended with {code or 'nothing after 60 s'}"
+                said = result.stdout or f"it exited with {result.returncode}"
                 continue
             if rshell(command=read_back, timeout=300).split(" ")[0] == want:
                 return
@@ -1651,7 +1678,7 @@ def write_system() -> None:  # ruff: ignore[complex-structure]
         (image.parent / "md5").unlink(missing_ok=True)
         said += ". The cached image was discarded, so the next run rebuilds it"
     _die(
-        message=f"{SYSTEM} was not written intact after {PUSH_TRIES} tries;"
+        message=f"{system} was not written intact after {PUSH_TRIES} tries;"
         f" the last: {said}"
     )
 

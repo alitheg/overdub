@@ -8,16 +8,18 @@ stops when the Dot is rooted.
 |---|---|---|
 | stock-booted | `adb get-state` says `unauthorized`, or Fire OS 6 without root | prints the fastboot gesture |
 | stock-fastboot | `unlock_status` is `false` | amonet v2.0.0 fastbrick |
-| v2-twrp, v2-fastboot | unlocked, `lk_build_desc` is not v1's | downgrade to amonet v1.1.0 |
-| v1-fastboot | `lk_build_desc` is `f379dba-20170906_000423` | v1 TEE and TWRP, then recovery |
-| v1-twrp | recovery, `ro.twrp.version` 3.2.x, `mtp` in `sys.usb.config` | Fire OS 5.5.5.4, boot and /system patches, Magisk 17.3 |
+| amonet-v2-twrp, v2-fastboot | unlocked, `lk_build_desc` is not v1's | downgrade to amonet v1.1.0 |
+| v1-fastboot | `lk_build_desc` is `f379dba-20170906_000423` | v1 TEE and TWRP 3.7.0_9-bboe1, then recovery |
+| amonet-v1-twrp | recovery, v1's `lk_build_desc`, another `ro.twrp.version`, `mtp` in `sys.usb.config` | writes TWRP 3.7.0_9-bboe1 to `recovery`, reboots into it |
+| bboe-v1-twrp | recovery, v1's `lk_build_desc`, `ro.twrp.version` 3.7.0_9-bboe1, `mtp` in `sys.usb.config` | Fire OS 5.5.5.4, boot and /system patches, Magisk 17.3 |
 | rooted | `sys.boot_completed` is 1 and `su -c id` answers uid 0 | hides the updater and checks it |
 
 - A probe can land part way through a boot. TWRP answers adb before it sets
   `ro.twrp.version`, and while USB drops for MTP, `adb shell` answers with
-  adb's error text. An empty version would read as v2's TWRP and start a
-  downgrade. So a version that does not start with a digit reads as
-  `starting`.
+  adb's error text. Either would read as v2's and start a downgrade. So an
+  `lk_build_desc` not shaped like `f379dba-20170906_000423`, or a version not
+  starting with a digit, reads as `starting`. The downgrade checks the shape
+  too.
 - An empty `lk_build_desc` would read as v2's and repeat the downgrade, `boot0`
   erase included. So an empty or timed-out fastboot read, and any poll that
   times out, reads as `starting` too.
@@ -133,7 +135,10 @@ stops when the Dot is rooted.
 - Each stage's estimate is an upper bound: the slowest time measured for it,
   rounded up to the next 5 seconds, over roots on macOS and Windows 11. One
   case is left out: a first run on a computer that finds the Dot already in
-  v1.1.0's TWRP waits up to 35 s more for the system image.
+  TWRP waits up to 35 s more for the system image.
+- The estimates and the rings are from TWRP 3.2.3. One root on macOS with
+  TWRP 3.7.0_9-bboe1 came in under every estimate. Its replace step took 37 s
+  on bryce.
 
 The ring during `dot_restore_stock.py 6302`, from a rooted Dot not set up:
 
@@ -248,14 +253,15 @@ ring read white.
   ```
   SUBSYSTEM=="usb", ATTR{idVendor}=="1949", MODE="0660", GROUP="plugdev", TAG+="uaccess"
   SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="4ee2", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+  SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="d001", MODE="0660", GROUP="plugdev", TAG+="uaccess"
   SUBSYSTEM=="usb", ATTR{idVendor}=="0bb4", ATTR{idProduct}=="0c01", MODE="0660", GROUP="plugdev", TAG+="uaccess"
   SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
   SUBSYSTEM=="tty", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
   ```
 
   Then `sudo udevadm trigger`. Fire OS 5 is `1949:0112` (`mtp,adb`, set by its
-  own init scripts, the same on every Dot), TWRP `18d1:4ee2`, fastboot
-  `0bb4:0c01`, and the bootrom `0e8d:0003`.
+  own init scripts, the same on every Dot), TWRP `18d1:d001` and
+  `18d1:4ee2`, fastboot `0bb4:0c01`, and the bootrom `0e8d:0003`.
 - `uaccess` covers a user at the machine; over SSH the user must be in
   `plugdev`. A new group reaches only new processes, and a running adb server
   keeps its old permissions: with the group added and the old server up,
@@ -309,7 +315,8 @@ ring read white.
   a Dot, the driver store held only MediaTek's and Amazon's
   `FireDevicesUsbDeviceClass`, which serves amonet fastboot (`0bb4:0c01`) and
   can come through Windows Update. Windows bound adb (`1949:0112`) and
-  v1.1.0's TWRP (`18d1:4ee2`) itself. macOS and Linux need no driver.
+  v1.1.0's TWRP (`18d1:4ee2`) itself. TWRP 3.7.0_9-bboe1 is untried on
+  Windows. macOS and Linux need no driver.
 - main.py's `serial_ports()` silently skips a port it cannot open, and waits
   forever. So the script gives it 60 seconds after the reboot to log
   `Found port`, then stops it and says why a port may be missing.
@@ -322,42 +329,59 @@ ring read white.
   4 bytes.
 - v1.1.0's `fastboot-step.sh` ships a Linux-only fastboot. The script runs its
   three commands with the host's fastboot instead: `bin/tz.img` to `tee2`,
-  `bin/twrp.img` to `recovery`, then `fastboot oem reboot-recovery`.
+  TWRP 3.7.0_9-bboe1 to `recovery` in place of v1.1.0's `bin/twrp.img`, then
+  `fastboot oem reboot-recovery`.
 
-## Install: v1's TWRP 3.2.3
+## Install: TWRP 3.7.0_9-bboe1
 
-- TWRP 3.2.3 prints `__bionic_open_tzdata...` into every `adb shell` output.
-  Those lines are dropped before anything is parsed.
-- adb answers 1.5 to 5 seconds before TWRP turns on MTP. The switch to
-  `mtp,adb` drops the Dot off USB and brings it back as a new transport, and a
-  push under way fails with `failed to read copy response: EOF`. So both
-  scripts wait for `mtp` in `sys.usb.config`, empty until then, and
-  `dot_root.py` tries each push 3 times. A push that fails, that runs past 10
-  minutes, or whose md5 does not match counts as one try.
-- TWRP's `adb shell` exit status is unreliable. So each device-side step is a
-  pushed script that ends by printing `root-step-ok`, which the script checks.
-  The pushed scripts have `\n` line endings on every host.
-- TWRP 3.2.3 has no `twrp format data`. userdata is formatted with
-  `mke2fs -t ext4 -b 4096 <userdata> <blocks - 256>`, which leaves 1 MiB for
-  the crypto footer. busybox's fstab has no type, so the mount is
-  `mount -t ext4 <dev> /data`.
+- The image is the `biscuit` build of
+  [bboe/twrp_device_amazon_echo-mt8163](https://github.com/bboe/twrp_device_amazon_echo-mt8163),
+  on [bboe/android_kernel_amazon_biscuit](https://github.com/bboe/android_kernel_amazon_biscuit).
+  GitHub Actions builds and attests both. The script pins the SHA-256.
+- v1.1.0's TWRP 3.2.3 moved 5.1 MB/s over adb, and 7.0 MB/s with cpu0 at
+  `performance`. This one moves 21.5 to 22.2 MB/s with either governor.
+- v2.0.0's TWRP cannot replace 3.2.3. Its kernel is 32-bit, and v1.1.0's LK
+  starts only a 64-bit one.
+- The kernel is Amazon's 5.5.5.4 one with two back-ports for Android 9's
+  `init`. Without SELinux ioctl permissions, `init` fails with `avtab: invalid
+  type or class`. Without `mmap_rnd_bits`, it fails with `Unable to set
+  adequate mmap entropy value!`.
+- amonet v1.1.0 keeps its image in `boot_a` and `boot_b`. Fire OS boots from
+  `boot_a_x` and `boot_b_x`. This build points `/boot` at `_x`. The script
+  does not rely on that. It writes `boot<slot>_x` and `system<slot>` by name.
+- `dd` to a by-name path that does not exist writes a file in TWRP's RAM
+  `/dev`, and the read-back of that file matches. So each target must be a
+  block device.
+- A Dot in TWRP 3.2.3 gets this TWRP written to `recovery` and checked by
+  md5. Then the script runs `adb reboot recovery`. The script drops 3.2.3's
+  `__bionic_open_tzdata...` lines from `adb shell` output.
+- adb answers before MTP is on, as `18d1:d001` in this TWRP. The switch to
+  `mtp,adb` puts the Dot back on USB under a new ID. In 3.2.3 the switch
+  failed a push with `failed to read copy response: EOF`. So both scripts
+  wait for `mtp` in `sys.usb.config`, and each push gets 3 tries.
+- This TWRP's `adb shell` returns the exit status. So each device-side step
+  is a pushed script, judged by its status. The scripts have `\n` line
+  endings.
+- The userdata script unmounts `/sdcard` and `/data`. It formats userdata
+  with `mke2fs -t ext4 -b 4096 <userdata> <blocks - 256>`, which leaves 1 MiB
+  for the crypto footer. Then it mounts it with `mount -t ext4`. The script
+  sets the size, block size and type itself, so the result does not depend on
+  the TWRP's fstab.
 - `/data` is then checked as a mountpoint. Otherwise Magisk's database lands
   in TWRP's RAM and is gone after the reboot.
-- TWRP runs one core at 600 MHz, and adbd is bound by it: USB moved
-  5.1 MB/s. With cpu0's governor set to `performance` (1.3 GHz) it moved
-  7.0 MB/s. The other 3 cores made no difference. So the userdata script sets
-  the governor first.
+- This TWRP mounts system at `/system_root`. So the script patches Fire OS's
+  system at `/tmp/fireos-system`.
+- A failed patch leaves that mount. So the write first unmounts both.
+  `/proc/mounts` keeps the name `mount` was given. So the check looks for the
+  by-name link and the `mmcblk0p` node.
 - Never `umount -a` in TWRP: it unmounts `/proc`.
 - Every push is read back by md5 on the device.
-- amonet v2.0.0's TWRP 3.7.0 moves 11.9 MB/s, but v1.1.0's LK cannot start
-  it. Its kernel is 32-bit ARM (`bootopt` ends `32N2`), and v1.1.0's chain
-  starts a 64-bit one. Flashed to `recovery`, it left the Dot without USB for
-  60 seconds until the watchdog reset it into Fire OS.
 
 ## Writing Fire OS
 
 - The OTA zip's installer does 2 writes that matter: `system.new.dat` to
-  `other-system` and `boot.img` to `other-boot`. Its LK write goes nowhere:
+  `other-system` and `boot.img` to `other-boot`. In TWRP 3.2.3 those name
+  the current slot's `system` and `boot_x`. Its LK write goes nowhere:
   amonet's TWRP links `other-lk` to `/dev/null`. Its TEE and preloader are byte
   for byte the ones v1.1.0 already wrote to `tee1` and boot0. Its last write,
   `target.blocklist` to `/cache/recovery/last_blocklist`, is skipped: it is a
@@ -368,18 +392,26 @@ ring read white.
   the Dot unlocks and downgrades.
 - The built image matched `system_a` after a `twrp install` in every MiB that
   the root's own edits and ext4's mount metadata leave alone.
-- `adb exec-in` streams the gzip into `gunzip | dd` on the Dot, so the
-  transfer, the unpacking and the eMMC writes overlap: 65 s on macOS and 76 s
-  on Windows 11, against 80 s for the zip's push and 134 s for its install. `adb push` cannot feed a pipe: it
-  replaces the target with a regular file.
-- `exec-in` returns up to 10 seconds before `dd` ends. So `dd` writes its exit
-  status to a file, the script waits for it, and then reads the partition back
-  by md5, which takes 12 s.
+- `adb shell` streams the gzip into `gunzip | dd` on the Dot, so transfer,
+  unpacking and writes overlap. `adb push` cannot feed a pipe.
+- TWRP 3.2.3 used `adb exec-in`: 65 s on macOS, 76 s on Windows 11. It
+  returned up to 10 s before `dd` ended.
+- This TWRP's `exec-in` drops unread input: 1 MiB arrived as 890,197 bytes.
+  Its `adb shell` carried 100 MB intact from macOS. This TWRP's `adb shell`
+  returns when `dd` ends, with `dd`'s status. Windows is untried.
+- On bryce the gzip reaches `cat > /dev/null` in 17.5 s. Through `gunzip`,
+  with the output discarded, it takes 36.4 to 39.3 s. So `gunzip` on the Dot
+  is the limit. The whole stage, with the eMMC and the md5 read-back, took
+  80 s. With TWRP 3.2.3 it took about 77 s.
+- The partition is then read back by md5: 12 s with 3.2.3.
 
 ## The boot image
 
 - The host builds it from the zip's `boot.img` and Magisk 17.3's zip, in
   about 2 s. Nothing runs magiskboot or Magisk's installer.
+- 17.3 is the last 17.x. Up to v25.2 support Android 5.1, but from v18 the
+  boot patch and `service.d` path change, and overdub needs only `su` and
+  `service.d`.
 - The ramdisk loses `verify` from every fstab, and `default.prop` gets
   `ro.secure=0`, `ro.debuggable=1` and `persist.sys.usb.config=mtp,adb`.
 - The cmdline is the 512-byte header field at offset 64. Stock is
@@ -459,9 +491,11 @@ to stock Fire OS 6, to test `dot_root.py` from a clean start. It follows
   back, because a refused `umount` is otherwise silent and the Dot has no
   screen to look at.
 - That TWRP carries two `dd` implementations which do not take the same
-  operands: the one on the path answers `conv option disabled`. So nothing
-  passes `conv`, which nothing needs -- a block device has no length to
-  truncate. `sgdisk`, `mke2fs`, `blockdev` and `md5sum` are looked for before
+  operands: the one on the path answers `conv option disabled`. So the script
+  uses `toybox dd` where it exists. TWRP 3.7.0_9-bboe1's `toybox dd`
+  truncates at its `seek` offset, and the block device answers `ftruncate:
+  Invalid argument`. So the one write with `seek` passes `conv=notrunc` to
+  `toybox dd`. `sgdisk`, `mke2fs`, `blockdev` and `md5sum` are looked for before
   the countdown, because `sgdisk` and `mke2fs` are not reached until after
   1.6 GB has gone in.
 - 6.5.5.5 (4310M) and Fire OS 5 ship a block image (`system.new.dat`) rather
