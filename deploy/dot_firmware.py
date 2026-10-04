@@ -317,15 +317,6 @@ VERIFIED: set[pathlib.Path] = set()
 WAIT = 600
 
 
-WRITES = (
-    ("system", "system_a", "write the system image to system_a", "4 min"),
-    ("system", "system_b", "write the system image to system_b", "4 min"),
-    ("boot", "boot_a", "write boot image to boot_a", "10 s"),
-    ("boot", "boot_b", "write boot image to boot_b", "10 s"),
-    ("misc", "misc", "write misc, slot a marked good", "5 s"),
-)
-
-
 class ANSIColor(enum.Enum):
     RED = 31
     YELLOW = 33
@@ -491,6 +482,16 @@ class OperationType(enum.IntEnum):
     REPLACE_XZ = 8
 
 
+class Partition(NamedTuple):
+    number: int
+    first: int
+    sectors: int
+
+    @property
+    def size(self) -> int:
+        return self.sectors * 512
+
+
 class PartitionField(enum.IntEnum):
     NAME = 1
     NEW_INFO = 7
@@ -581,6 +582,47 @@ class State(enum.Enum):
     STOCK_FASTBOOT = "stock-fastboot"
     V1_FASTBOOT = "v1-fastboot"
     V2_FASTBOOT = "v2-fastboot"
+
+
+class Step(NamedTuple):
+    image: str
+    partition: str
+    label: str
+    estimate: str
+
+
+WRITES = (
+    Step(
+        estimate="4 min",
+        image="system",
+        label="write the system image to system_a",
+        partition="system_a",
+    ),
+    Step(
+        estimate="4 min",
+        image="system",
+        label="write the system image to system_b",
+        partition="system_b",
+    ),
+    Step(
+        estimate="10 s",
+        image="boot",
+        label="write boot image to boot_a",
+        partition="boot_a",
+    ),
+    Step(
+        estimate="10 s",
+        image="boot",
+        label="write boot image to boot_b",
+        partition="boot_b",
+    ),
+    Step(
+        estimate="5 s",
+        image="misc",
+        label="write misc, slot a marked good",
+        partition="misc",
+    ),
+)
 
 
 class WireType(enum.IntEnum):
@@ -857,16 +899,41 @@ def cache_note() -> None:
         )
 
 
-def chain_writes() -> tuple[tuple[str, str, str, str], ...]:
+def chain_writes() -> tuple[Step, ...]:
     live = "lk_b" if rshell(command="getprop ro.boot.slot_suffix") == "_b" else "lk_a"
     spare = "lk_a" if live == "lk_b" else "lk_b"
     first, last = CHAIN_TEE
     return (
-        ("lk", spare, f"write LK image to {spare} (spare slot)", "5 s"),
-        ("tee", first, f"write TEE image to {first} (backup)", "5 s"),
-        ("expdb", "expdb", "zero expdb (amonet kaeru payload)", "5 s"),
-        ("lk", live, f"write LK image to {live} (live slot)", "5 s"),
-        ("tee", last, f"write TEE image to {last} (primary)", "5 s"),
+        Step(
+            estimate="5 s",
+            image="lk",
+            label=f"write LK image to {spare} (spare slot)",
+            partition=spare,
+        ),
+        Step(
+            estimate="5 s",
+            image="tee",
+            label=f"write TEE image to {first} (backup)",
+            partition=first,
+        ),
+        Step(
+            estimate="5 s",
+            image="expdb",
+            label="zero expdb (amonet kaeru payload)",
+            partition="expdb",
+        ),
+        Step(
+            estimate="5 s",
+            image="lk",
+            label=f"write LK image to {live} (live slot)",
+            partition=live,
+        ),
+        Step(
+            estimate="5 s",
+            image="tee",
+            label=f"write TEE image to {last} (primary)",
+            partition=last,
+        ),
     )
 
 
@@ -1740,7 +1807,7 @@ def restore(
     backup_sector: int,
     build: str,
     files: dict[str, pathlib.Path],
-    parts: dict[str, tuple[int, int, int]],
+    parts: dict[str, Partition],
     work: pathlib.Path,
 ) -> None:
     unmount()
@@ -1749,13 +1816,13 @@ def restore(
     clear_boot0()
     PROGRESS.end()
 
-    for key, part, label, estimate in WRITES:
+    for step in WRITES:
         write(
-            estimate=estimate,
-            label=label,
-            number=parts[part][0],
-            path=files[key],
-            sector=parts[part][1],
+            estimate=step.estimate,
+            label=step.label,
+            number=parts[step.partition].number,
+            path=files[step.image],
+            sector=parts[step.partition].first,
         )
     write(
         estimate="5 s",
@@ -1780,25 +1847,25 @@ def restore(
             "the kernel still sees amonet's partitions; do not reboot,"
             " reread the table first"
         )
-    number, _, sectors = parts["userdata"]
-    if not rshell(command=f'grep " {sectors // 2} mmcblk0p{number}$" /proc/partitions'):
+    userdata, cache = parts["userdata"], parts["cache"]
+    kib = userdata.size // 1024
+    if not rshell(command=f'grep " {kib} mmcblk0p{userdata.number}$" /proc/partitions'):
         restore_failed("userdata is not its stock size; do not reboot")
-    cache = parts["cache"][0]
     out = rshell(
-        command=f"mke2fs -q -t ext4 {DISK}p{cache} && mke2fs -q -t ext4 {DISK}p{number}"
-        " && echo formatted"
+        command=f"mke2fs -q -t ext4 {DISK}p{cache.number}"
+        f" && mke2fs -q -t ext4 {DISK}p{userdata.number} && echo formatted"
     )
     if out.split("\n")[-1] != "formatted":
         restore_failed("cache and userdata did not format; do not reboot")
     PROGRESS.end()
 
-    for key, part, label, estimate in chain_writes():
+    for step in chain_writes():
         write(
-            estimate=estimate,
-            label=label,
-            number=parts[part][0],
-            path=files[key],
-            sector=parts[part][1],
+            estimate=step.estimate,
+            label=step.label,
+            number=parts[step.partition].number,
+            path=files[step.image],
+            sector=parts[step.partition].first,
         )
 
     PROGRESS.begin(estimate="5 s", label="write preloader to boot0")
@@ -2163,20 +2230,20 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
         files[name] = work / name
         files[name].write_bytes(data)
     boot = work / "boot.img"
-    boot_size = parts["boot_a"][2] * 512
+    boot_size = parts["boot_a"].size
     files["boot"] = work / "boot16.img"
     files["boot"].write_bytes(boot.read_bytes().ljust(boot_size, b"\0"))
     files["expdb"] = work / "expdb.zero"
-    files["expdb"].write_bytes(b"\0" * (parts["expdb"][2] * 512))
-    misc = bytearray(parts["misc"][2] * 512)
+    files["expdb"].write_bytes(b"\0" * parts["expdb"].size)
+    misc = bytearray(parts["misc"].size)
     misc[BCB_OFFSET : BCB_OFFSET + len(BCB)] = BCB
     files["misc"] = work / "misc.img"
     files["misc"].write_bytes(misc)
     for image in ("system", "tee", "lk"):
         files[image] = work / (image + ".img")
-    for key, part, _, _ in (*WRITES, *chain_writes()):
-        if files[key].stat().st_size > parts[part][2] * 512:
-            _die(message=f"{files[key].name} does not fit {part}")
+    for step in (*WRITES, *chain_writes()):
+        if files[step.image].stat().st_size > parts[step.partition].size:
+            _die(message=f"{files[step.image].name} does not fit {step.partition}")
     if (
         rshell(command="[ -b /dev/block/mmcblk0boot0 ] && echo block").split("\n")[-1]
         != "block"
@@ -2243,7 +2310,7 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
 
 def stock_gpt(  # ruff: ignore[too-many-locals]
     raw: bytes,
-) -> tuple[bytes, bytes, int, dict[str, tuple[int, int, int]]]:
+) -> tuple[bytes, bytes, int, dict[str, Partition]]:
     mbr, hdr, entries = (
         raw[:512],
         bytearray(raw[512:1024]),
@@ -2294,10 +2361,8 @@ def stock_gpt(  # ruff: ignore[too-many-locals]
     for i in range(k):
         e = new[i * 128 : (i + 1) * 128]
         first, last = struct.unpack("<QQ", e[32:48])
-        parts[e[56:128].decode("utf-16le").rstrip("\0")] = (
-            i + 1,
-            first,
-            last - first + 1,
+        parts[e[56:128].decode("utf-16le").rstrip("\0")] = Partition(
+            first=first, number=i + 1, sectors=last - first + 1
         )
     primary = mbr + header(alternate=backup_lba, at=2, my=1) + bytes(new)
     backup = bytes(new) + header(alternate=1, at=backup_lba - 32, my=backup_lba)
