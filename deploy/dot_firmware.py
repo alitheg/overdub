@@ -665,6 +665,23 @@ def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
     raise SystemExit(text)
 
 
+def adb_script(*, body: str, name: str, work: pathlib.Path) -> bool:
+    local = work / name
+    with local.open("w", newline="\n") as f:
+        f.write(body)
+    remote = DOT_TMP / "root-step.sh"
+    push_checked(local=local, remote=remote)
+    command = f"sh {remote}; s=$?; rm -f {remote}; exit $s"
+    return run(args=["adb", "shell", command], timeout=300).returncode == 0
+
+
+def adb_shell(*, command: str, timeout: float = 300) -> str:
+    out = run(args=["adb", "shell", "-n", command], timeout=timeout).stdout
+    return "\n".join(
+        line for line in out.split("\n") if not line.startswith("__bionic_open_tzdata")
+    ).strip()
+
+
 def boot_image(*, fireos: pathlib.Path, magisk: pathlib.Path) -> bytes:
     with zipfile.ZipFile(fireos) as z:
         stock = z.read("boot.img")
@@ -901,6 +918,8 @@ def cache_dir() -> pathlib.Path:
 
 
 CACHE = cache_dir()
+
+
 ERASED = CACHE / "boot0-erased"
 
 
@@ -917,7 +936,9 @@ def cache_note() -> None:
 
 
 def chain_writes() -> tuple[Step, ...]:
-    live = "lk_b" if rshell(command="getprop ro.boot.slot_suffix") == "_b" else "lk_a"
+    live = (
+        "lk_b" if adb_shell(command="getprop ro.boot.slot_suffix") == "_b" else "lk_a"
+    )
     spare = "lk_a" if live == "lk_b" else "lk_b"
     first, last = CHAIN_TEE
     return (
@@ -987,7 +1008,7 @@ def check_user() -> None:
 
 
 def clear_boot0() -> None:
-    answer = rshell(command=Shell.CLEAR_BOOT0.value).split("\n")[-1].split()
+    answer = adb_shell(command=Shell.CLEAR_BOOT0.value).split("\n")[-1].split()
     if answer == ["4096", "0"]:
         return
     read, *still_set = answer or [""]
@@ -1111,7 +1132,7 @@ def downgrade(*, from_twrp: bool) -> None:
     amonet = unpack(AMONET_V1)
     wheel = fetch(PYSERIAL)
     if from_twrp:
-        lk = rshell(command="getprop ro.boot.lk_build_desc", timeout=30)
+        lk = adb_shell(command="getprop ro.boot.lk_build_desc", timeout=30)
     else:
         if getvar("unlock_status").lower() != "true":
             _die(message="not in amonet's fastboot")
@@ -1215,7 +1236,9 @@ def erase_by_fastboot() -> str:
 
 
 def erase_from_twrp() -> str:
-    answer = rshell(command=Shell.CLEAR_BOOT0.value, timeout=60).split("\n")[-1].split()
+    answer = (
+        adb_shell(command=Shell.CLEAR_BOOT0.value, timeout=60).split("\n")[-1].split()
+    )
     if answer != ["4096", "0"]:
         return (
             "boot0's header did not read back as cleared, so the Dot was not"
@@ -1410,14 +1433,14 @@ def gpt_intact(*, entries: bytes, hdr: bytes) -> bool:
 
 def hide_updater() -> None:
     def hidden() -> bool:
-        out = rshell(command=f"su -c 'dumpsys package {UPDATER}'", timeout=60)
+        out = adb_shell(command=f"su -c 'dumpsys package {UPDATER}'", timeout=60)
         return any(
             line.strip().startswith("User 0:") and "hidden=true" in line
             for line in out.split("\n")
         )
 
     if not hidden():
-        rshell(command=f"su -c 'pm hide {UPDATER}'", timeout=60)
+        adb_shell(command=f"su -c 'pm hide {UPDATER}'", timeout=60)
     if not hidden():
         _die(
             message=f"{UPDATER} is not hidden; an update would replace the"
@@ -1452,21 +1475,21 @@ def in_fastboot() -> bool:
 def install_fireos() -> None:
     fireos = fetch(FIREOS)
     magisk = fetch(MAGISK)
-    slot = rshell(command="getprop ro.boot.slot_suffix", timeout=30)
+    slot = adb_shell(command="getprop ro.boot.slot_suffix", timeout=30)
     if slot not in {"_a", "_b"}:
         _die(message=f"TWRP reports the boot slot {slot!r}, not _a or _b")
     boot, system = f"{BY_NAME}/boot{slot}_x", f"{BY_NAME}/system{slot}"
     with tempfile.TemporaryDirectory(dir=CACHE) as tmp:
         work = pathlib.Path(tmp)
         PROGRESS.begin(estimate="5 s", label="formatting userdata", step=5)
-        if not rscript(body=Shell.DATA.value, name="data.sh", work=work):
+        if not adb_script(body=Shell.DATA.value, name="data.sh", work=work):
             _die(message="userdata did not format and mount")
         PROGRESS.begin(
             estimate="100 s", label="writing Fire OS 5.5.5.4's /system", step=6
         )
         write_system(system)
         body = Shell.SYSTEM.value.format(hosts=" ".join(UPDATE_HOSTS), system=system)
-        if not rscript(body=body, name="system.sh", work=work):
+        if not adb_script(body=body, name="system.sh", work=work):
             _die(message="patching /system failed")
 
         PROGRESS.begin(estimate="5 s", label="writing the boot image", step=7)
@@ -1475,7 +1498,7 @@ def install_fireos() -> None:
         image.write_bytes(data.ljust(-(-len(data) // 4096) * 4096, b"\0"))
         final = DOT_TMP / "boot.img"
         push_checked(local=image, remote=final)
-        rshell(
+        adb_shell(
             command=Shell.WRITE.value.format(dst=boot, src=final),
             timeout=120,
         )
@@ -1484,7 +1507,9 @@ def install_fireos() -> None:
             f"[ -b {boot} ] && dd if={boot} bs=4096 count={blocks} 2>/dev/null | md5sum"
         )
         want = digest(kind="md5", path=image)
-        written = rshell(command=read_back, timeout=120).split("\n")[-1].split(" ")[0]
+        written = (
+            adb_shell(command=read_back, timeout=120).split("\n")[-1].split(" ")[0]
+        )
         if written != want:
             _die(
                 message="the patched boot image did not verify on the Dot: read"
@@ -1506,14 +1531,14 @@ def install_magisk(*, magisk: pathlib.Path, work: pathlib.Path) -> None:
     archive = work / "magisk.cpio"
     archive.write_bytes(cpio(files))
     push_checked(local=archive, remote=DOT_TMP / "magisk.cpio")
-    if not rscript(body=Shell.MAGISK.value, name="magisk.sh", work=work):
+    if not adb_script(body=Shell.MAGISK.value, name="magisk.sh", work=work):
         _die(message="Magisk 17.3 did not install")
     names = sorted(name for name, (mode, _) in files.items() if stat.S_ISREG(mode))
     want = hashlib.md5(
         b"".join(files[name][1] for name in names), usedforsecurity=False
     ).hexdigest()
     paths = " ".join(name.decode() for name in names)
-    got = rshell(command=f"cd /; cat {paths} | md5sum").split("\n")[-1].split(" ")[0]
+    got = adb_shell(command=f"cd /; cat {paths} | md5sum").split("\n")[-1].split(" ")[0]
     if got != want:
         _die(message="Magisk 17.3's files did not verify on the Dot")
 
@@ -1646,7 +1671,7 @@ def mark() -> str:
 
 
 def md5_mismatch(*, command: str, want: str) -> str:
-    got = [*rshell(command=command).split("\n")[-1].split(" "), ""][0]
+    got = [*adb_shell(command=command).split("\n")[-1].split(" "), ""][0]
     return "" if got == want else f": read {got or 'nothing'}, expected {want}"
 
 
@@ -1741,26 +1766,26 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
         return State.STOCK_BOOTED
     adb_state = adb_state.strip()
     if adb_state == "recovery":
-        version = rshell(command="getprop ro.twrp.version", timeout=30)
-        lk = rshell(command="getprop ro.boot.lk_build_desc", timeout=30)
+        version = adb_shell(command="getprop ro.twrp.version", timeout=30)
+        lk = adb_shell(command="getprop ro.boot.lk_build_desc", timeout=30)
         if not version[:1].isdigit() or not LK_DESC.fullmatch(lk):
             return State.STARTING
         if lk != LK.V1.value:
             return State.AMONET_V2_TWRP
-        if "mtp" not in rshell(command="getprop sys.usb.config", timeout=30):
+        if "mtp" not in adb_shell(command="getprop sys.usb.config", timeout=30):
             return State.STARTING
         if version != TWRP_VERSION:
             return State.AMONET_V1_TWRP
         return State.BBOE_V1_TWRP
     if adb_state == "device":
-        booted = rshell(command="getprop sys.boot_completed", timeout=30) == "1"
-        if rshell(command="getprop ro.build.version.name", timeout=30).startswith(
+        booted = adb_shell(command="getprop sys.boot_completed", timeout=30) == "1"
+        if adb_shell(command="getprop ro.build.version.name", timeout=30).startswith(
             "Fire OS 6"
         ):
-            if "uid=0" in rshell(command="id; su -c id", timeout=30):
+            if "uid=0" in adb_shell(command="id; su -c id", timeout=30):
                 return State.V2_BOOTED
             return State.STOCK_BOOTED
-        if booted and "uid=0" in rshell(command="su -c id", timeout=30):
+        if booted and "uid=0" in adb_shell(command="su -c id", timeout=30):
             return State.ROOTED
         return State.BOOTED
     return State.EMOS if emos("find") == "1" else State.NONE
@@ -1775,9 +1800,9 @@ def push_checked(*, local: pathlib.Path, remote: str | pathlib.PurePosixPath) ->
             if result.returncode != 0:
                 said = result.stdout
                 continue
-            if rshell(command=f"md5sum {remote}", timeout=300).split(" ")[0] == digest(
-                kind="md5", path=local
-            ):
+            if adb_shell(command=f"md5sum {remote}", timeout=300).split(" ")[
+                0
+            ] == digest(kind="md5", path=local):
                 return
             said = "its md5 read back did not match"
         except subprocess.TimeoutExpired as error:
@@ -1827,7 +1852,7 @@ def replace_twrp() -> None:
     remote = DOT_TMP / TWRP.name
     push_checked(local=twrp, remote=remote)
     recovery = f"{BY_NAME}/recovery"
-    rshell(
+    adb_shell(
         command=Shell.WRITE.value.format(dst=recovery, src=remote),
         timeout=120,
     )
@@ -1836,7 +1861,7 @@ def replace_twrp() -> None:
         f"[ -b {recovery} ] && dd if={recovery} bs=512 count={sectors} 2>/dev/null"
         " | md5sum"
     )
-    written = rshell(command=read_back, timeout=120).split("\n")[-1].split(" ")[0]
+    written = adb_shell(command=read_back, timeout=120).split("\n")[-1].split(" ")[0]
     if written != digest(kind="md5", path=twrp):
         _die(
             message=f"TWRP {TWRP_VERSION} did not verify in recovery. Leave the Dot"
@@ -1885,20 +1910,22 @@ def restore(
     )
 
     PROGRESS.begin(estimate="30 s", label="format cache and userdata")
-    if "No problems found" not in rshell(command="sgdisk --verify " + DISK):
+    if "No problems found" not in adb_shell(command="sgdisk --verify " + DISK):
         restore_failed("sgdisk does not accept the new table; do not reboot")
     unmount(started=True)
-    rshell(command="blockdev --rereadpt " + DISK)
-    if rshell(command='grep -c "mmcblk0p1[78]$" /proc/partitions') != "0":
+    adb_shell(command="blockdev --rereadpt " + DISK)
+    if adb_shell(command='grep -c "mmcblk0p1[78]$" /proc/partitions') != "0":
         restore_failed(
             "the kernel still sees amonet's partitions; do not reboot,"
             " reread the table first"
         )
     userdata, cache = parts["userdata"], parts["cache"]
     kib = userdata.size // 1024
-    if not rshell(command=f'grep " {kib} mmcblk0p{userdata.number}$" /proc/partitions'):
+    if not adb_shell(
+        command=f'grep " {kib} mmcblk0p{userdata.number}$" /proc/partitions'
+    ):
         restore_failed("userdata is not its stock size; do not reboot")
-    out = rshell(
+    out = adb_shell(
         command=f"mke2fs -q -t ext4 {DISK}p{cache.number}"
         f" && mke2fs -q -t ext4 {DISK}p{userdata.number} && echo formatted"
     )
@@ -1920,7 +1947,7 @@ def restore(
     staged = DOT_TMP / "pl.img"
     if run(args=["adb", "push", preloader, staged], timeout=120).returncode != 0:
         restore_failed("the preloader did not reach the Dot; do not reboot")
-    rshell(
+    adb_shell(
         command="echo 0 > /sys/block/mmcblk0boot0/force_ro; "
         f"{SESSION.dd} if={staged} of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
         "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
@@ -2045,8 +2072,8 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                 )
         if current == State.ROOTED:
             hide_updater()
-            version = rshell(command="getprop ro.build.version.name")
-            selinux = rshell(command="getenforce")
+            version = adb_shell(command="getprop ro.build.version.name")
+            selinux = adb_shell(command="getenforce")
             warn(f"The Dot is rooted: {version}, SELinux {selinux}, {UPDATER} hidden.")
             warn("Install overdub with deploy/install.py <name>.")
             cache_note()
@@ -2101,23 +2128,6 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         elif current == State.BBOE_V1_TWRP:
             install_fireos()
         seen = None
-
-
-def rscript(*, body: str, name: str, work: pathlib.Path) -> bool:
-    local = work / name
-    with local.open("w", newline="\n") as f:
-        f.write(body)
-    remote = DOT_TMP / "root-step.sh"
-    push_checked(local=local, remote=remote)
-    command = f"sh {remote}; s=$?; rm -f {remote}; exit $s"
-    return run(args=["adb", "shell", command], timeout=300).returncode == 0
-
-
-def rshell(*, command: str, timeout: float = 300) -> str:
-    out = run(args=["adb", "shell", "-n", command], timeout=timeout).stdout
-    return "\n".join(
-        line for line in out.split("\n") if not line.startswith("__bionic_open_tzdata")
-    ).strip()
 
 
 def run(
@@ -2257,11 +2267,11 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
         )
     deadline = time.monotonic() + 30
     version = ""
-    while not version or "mtp" not in rshell(command="getprop sys.usb.config"):
+    while not version or "mtp" not in adb_shell(command="getprop sys.usb.config"):
         if time.monotonic() > deadline:
             _die(message="TWRP did not finish starting within 30 seconds")
         time.sleep(1)
-        version = rshell(command="getprop ro.twrp.version")
+        version = adb_shell(command="getprop ro.twrp.version")
         if not version[:1].isdigit():
             version = ""
         elif not version.startswith(TWRP_VERSIONS):
@@ -2271,16 +2281,18 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
                 " installs"
             )
     if (
-        rshell(command="toybox dd --help >/dev/null 2>&1 && echo yes").split("\n")[-1]
+        adb_shell(command="toybox dd --help >/dev/null 2>&1 && echo yes").split("\n")[
+            -1
+        ]
         == "yes"
     ):
         SESSION.dd = "toybox dd"
-    tools = rshell(command=Shell.TOOLS.value).split("\n")[-1]
+    tools = adb_shell(command=Shell.TOOLS.value).split("\n")[-1]
     if not tools.startswith("tools:"):
         _die(message="the Dot did not answer which tools it has: " + tools)
     if tools != "tools:":
         _die(message="this TWRP has no" + tools[len("tools:") :])
-    device = rshell(command="getprop ro.product.device")
+    device = adb_shell(command="getprop ro.product.device")
     if device != "biscuit":
         _die(
             message="this is not an Echo Dot (2nd Gen): TWRP reports the"
@@ -2289,7 +2301,7 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
 
     raw = read_sectors(count=34, start=0)
     if not gpt_intact(entries=raw[1024:], hdr=raw[512:1024]):
-        size = rshell(command=f"blockdev --getsize64 {DISK}")
+        size = adb_shell(command=f"blockdev --getsize64 {DISK}")
         if not size.isdigit():
             _die(message="could not read the Dot's disk size")
         tail = read_sectors(count=33, start=int(size) // 512 - 33)
@@ -2319,14 +2331,16 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
         if files[step.image].stat().st_size > parts[step.partition].size:
             _die(message=f"{files[step.image].name} does not fit {step.partition}")
     if (
-        rshell(command="[ -b /dev/block/mmcblk0boot0 ] && echo block").split("\n")[-1]
+        adb_shell(command="[ -b /dev/block/mmcblk0boot0 ] && echo block").split("\n")[
+            -1
+        ]
         != "block"
     ):
         _die(
             message="/dev/block/mmcblk0boot0 is not a block device, so the"
             " preloader would be written to a file and read back from it"
         )
-    boot0 = rshell(command="cat /sys/block/mmcblk0boot0/size")
+    boot0 = adb_shell(command="cat /sys/block/mmcblk0boot0/size")
     if (
         not boot0.isdigit()
         or (work / "preloader.img").stat().st_size != int(boot0) * 512
@@ -2468,7 +2482,7 @@ def system_image() -> tuple[pathlib.Path, str, int]:
 
 
 def unmount(*, started: bool = False) -> None:
-    left = rshell(command=Shell.UNMOUNT.value).split("\n")[-1]
+    left = adb_shell(command=Shell.UNMOUNT.value).split("\n")[-1]
     if left.startswith("left:"):
         if not left[len("left:") :].strip():
             return
@@ -2589,7 +2603,7 @@ def write(
         PROGRESS.end(skipped=True)
         return
     if number is not None:
-        start = rshell(command=f"cat /sys/class/block/mmcblk0p{number}/start")
+        start = adb_shell(command=f"cat /sys/class/block/mmcblk0p{number}/start")
         if start.split("\n")[-1].strip() != str(sector):
             restore_failed(
                 f"{DISK}p{number} starts at {start or 'nothing'}, not {sector},"
@@ -2606,13 +2620,13 @@ def write(
                 f"{label} did not reach the Dot; do not reboot:\n{pushed.stdout}"
             )
         notrunc = " conv=notrunc" if SESSION.dd == "toybox dd" else ""
-        done = rshell(
+        done = adb_shell(
             command=f"{SESSION.dd} if={staged} of={DISK} bs={bs} seek={offset}"
             f"{notrunc} && rm -f {staged} && echo written"
         )
         if done.split("\n")[-1] != "written":
             restore_failed(f"{label} failed; do not reboot:\n{done}")
-    if rshell(command=Shell.FLUSH.value).split("\n")[-1] != "flushed":
+    if adb_shell(command=Shell.FLUSH.value).split("\n")[-1] != "flushed":
         restore_failed(label + " could not be flushed; do not reboot")
     wrong = md5_mismatch(command=verify, want=want)
     if wrong:
@@ -2622,7 +2636,7 @@ def write(
 
 def write_system(system: str) -> None:
     image, want, blocks = system_image()
-    ready = rshell(
+    ready = adb_shell(
         command="umount /system_root /tmp/fireos-system 2>/dev/null;"
         f' d=$(readlink -f {system}); [ -b "$d" ]'
         f' && ! grep -q -e "^$d " -e "^{system} " /proc/mounts && echo ready'
@@ -2643,7 +2657,7 @@ def write_system(system: str) -> None:
             if result.returncode != 0:
                 said = result.stdout or f"it exited with {result.returncode}"
                 continue
-            if rshell(command=read_back, timeout=300).split(" ")[0] == want:
+            if adb_shell(command=read_back, timeout=300).split(" ")[0] == want:
                 return
             said = "its md5 read back did not match"
         except subprocess.TimeoutExpired as error:
