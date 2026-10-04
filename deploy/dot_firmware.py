@@ -319,7 +319,7 @@ sync; umount $m
 """
 
 
-TWRP_VERSION = "3.7.0_9-bboe1"
+TWRP_VERSION = "3.7.0_9-bboe2"
 
 
 TWRP_VERSIONS = ("3.2.", "3.7.")
@@ -469,7 +469,7 @@ PYSERIAL = Download(
 
 TWRP = Download(
     name=f"twrp-{TWRP_VERSION}-biscuit.img",
-    sha256="10d0b64a4398631953dc2d6821f382eaa6ac9bccff4994f54c9e849c2b781c83",
+    sha256="f59052713a6580a1477490b2f9cad80e9b31d22408861b18fd442129a71f2ad9",
     url="https://github.com/bboe/twrp_device_amazon_echo-mt8163/releases/download/"
     f"v{TWRP_VERSION}/twrp-v{TWRP_VERSION}-biscuit.img",
 )
@@ -2303,7 +2303,7 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
         elif not version.startswith(TWRP_VERSIONS):
             _die(
                 message="this needs a TWRP for this Dot: v1.1.0's 3.2.3,"
-                " v2.0.0's 3.7.0, or the 3.7.0_9-bboe1 that dot_firmware.py root"
+                f" v2.0.0's 3.7.0, or the {TWRP_VERSION} that dot_firmware.py root"
                 " installs"
             )
     if (

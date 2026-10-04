@@ -11,9 +11,9 @@ finds, and stops when the Dot is rooted.
 | emos | no adb or fastboot, and one serial port with USB ID `1949:2007` | `/init recovery` at emOS's serial console |
 | v2-booted | Fire OS 6, and `id` or `su -c id` answers uid 0 | `adb reboot recovery`, into v2.0.0's TWRP |
 | amonet-v2-twrp, v2-fastboot | unlocked, `lk_build_desc` is not v1's | downgrade to amonet v1.1.0 |
-| v1-fastboot | `lk_build_desc` is `f379dba-20170906_000423` | v1 TEE and TWRP 3.7.0_9-bboe1, then recovery |
-| amonet-v1-twrp | recovery, v1's `lk_build_desc`, another `ro.twrp.version`, `mtp` in `sys.usb.config` | writes TWRP 3.7.0_9-bboe1 to `recovery`, reboots into it |
-| bboe-v1-twrp | recovery, v1's `lk_build_desc`, `ro.twrp.version` 3.7.0_9-bboe1, `mtp` in `sys.usb.config` | Fire OS 5.5.5.4, boot and /system patches, Magisk 17.3 |
+| v1-fastboot | `lk_build_desc` is `f379dba-20170906_000423` | v1 TEE and TWRP 3.7.0_9-bboe2, then recovery |
+| amonet-v1-twrp | recovery, v1's `lk_build_desc`, another `ro.twrp.version`, `mtp` in `sys.usb.config` | writes TWRP 3.7.0_9-bboe2 to `recovery`, reboots into it |
+| bboe-v1-twrp | recovery, v1's `lk_build_desc`, `ro.twrp.version` 3.7.0_9-bboe2, `mtp` in `sys.usb.config` | Fire OS 5.5.5.4, boot and /system patches, Magisk 17.3 |
 | rooted | `sys.boot_completed` is 1 and `su -c id` answers uid 0 | hides the updater and checks it |
 
 - A probe can land part way through a boot. TWRP answers adb before it sets
@@ -348,7 +348,7 @@ ring read white.
   a Dot, the driver store held only MediaTek's and Amazon's
   `FireDevicesUsbDeviceClass`, which serves amonet fastboot (`0bb4:0c01`) and
   can come through Windows Update. Windows bound adb (`1949:0112`) and
-  v1.1.0's TWRP (`18d1:4ee2`) itself. TWRP 3.7.0_9-bboe1 is untried on
+  v1.1.0's TWRP (`18d1:4ee2`) itself. TWRP 3.7.0_9-bboeN is untried on
   Windows. macOS and Linux need no driver.
 - main.py's `serial_ports()` silently skips a port it cannot open, and waits
   forever. So the script gives it 60 seconds after the reboot to log
@@ -362,15 +362,21 @@ ring read white.
   4 bytes.
 - v1.1.0's `fastboot-step.sh` ships a Linux-only fastboot. The script runs its
   three commands with the host's fastboot instead: `bin/tz.img` to `tee2`,
-  TWRP 3.7.0_9-bboe1 to `recovery` in place of v1.1.0's `bin/twrp.img`, then
+  TWRP 3.7.0_9-bboe2 to `recovery` in place of v1.1.0's `bin/twrp.img`, then
   `fastboot oem reboot-recovery`.
 
-## Install: TWRP 3.7.0_9-bboe1
+## Install: TWRP 3.7.0_9-bboe2
 
 - The image is the `biscuit` build of
   [bboe/twrp_device_amazon_echo-mt8163](https://github.com/bboe/twrp_device_amazon_echo-mt8163),
   on [bboe/android_kernel_amazon_biscuit](https://github.com/bboe/android_kernel_amazon_biscuit).
   GitHub Actions builds and attests both. The script pins the SHA-256.
+- bboe2 adds v1.1.0's TWRP 3.2.3 links: `/dev/block/other-boot` and
+  `other-system` name the current slot's kernel and system, and `other-lk` is
+  `/dev/null`. EchoMuse's installer finds the kernel through `other-boot`, and
+  stopped on bboe1 without it. Measured on bryce: `other-boot` was
+  `mmcblk0p10` and `other-system` `mmcblk0p13`, and both followed a slot
+  change.
 - v1.1.0's TWRP 3.2.3 moved 5.1 MB/s over adb, and 7.0 MB/s with cpu0 at
   `performance`. This one moves 21.5 to 22.2 MB/s with either governor.
 - v2.0.0's TWRP cannot replace 3.2.3. Its kernel is 32-bit, and v1.1.0's LK
