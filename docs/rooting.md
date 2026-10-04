@@ -110,13 +110,6 @@ stops when the Dot is rooted.
 - `--verbose` prints each `adb` and `fastboot` command and its exit status
   with the time, and each state `dot_root.py` sees. The 2-second polls are not
   printed.
-- `--delay [SECONDS]` implies `--verbose` and counts down before each stage:
-  10 seconds by default in `dot_root.py`, 5 in `dot_restore_stock.py`. A
-  recording then shows each state settled, and the times match frames to
-  commands.
-- The delay goes only between stages, because timing inside one matters. The
-  fastbrick relies on an 8-second timeout, and amonet v1.1.0's bootrom step
-  starts before boot0 is erased and has 60 seconds to find the port.
 - In verbose mode, or when the output is not a terminal, a stage prints a line
   when it starts and when it ends, with no running count. Output that is not
   a terminal also gets no download meter. Either would fill a log with `\r`

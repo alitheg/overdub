@@ -45,9 +45,7 @@ AMONET_V1 = "amonet-biscuit-v1.1.0.zip"
 AMONET_V1_SHA = "bd4d3a18b6b6e9ff6e49a4739159a81020673202795cb3959f7c9ff24351b663"
 AMONET_V2 = "amonet-biscuit-v2.0.0.zip"
 AMONET_V2_SHA = "98297293701082bc7272efe077f941c56fc7b6e1f27ef6f2e93b6e4c6fc7b62d"
-ARGS = argparse.Namespace(
-    delay=0, probing=False, short=False, shown=None, verbose=False
-)
+ARGS = argparse.Namespace(probing=False, short=False, shown=None, verbose=False)
 AS_ROOT = (
     "run this as your own user, not as root or with sudo: the downloads would"
     " belong to root, and on Linux udev rules let a user open the Dot"
@@ -326,7 +324,6 @@ class Progress:
         self.end()
         about = f"(~{estimate})" if estimate else ""
         self.line = f"[{step}/{STEPS}] {label:<36} {about:<8} "
-        delay(f"[{step}/{STEPS}] {label}")
         self.ts = time.monotonic()
         self.open = True
         if ARGS.verbose or not sys.stdout.isatty():
@@ -746,19 +743,6 @@ def cpio_files(data: bytes) -> dict[bytes, tuple[int, bytes]]:
         files[name] = (fields[1], body)
 
 
-def delay(label: str) -> None:
-    if not ARGS.delay:
-        return
-    for left in range(ARGS.delay, 0, -1):
-        show(
-            end="",
-            flush=True,
-            text=f"\r{clock()} next: {label}; starting in {left:2d}s",
-        )
-        time.sleep(1)
-    show(text=f"\r{clock()} next: {label}; starting now      ")
-
-
 def devices(args: list[str]) -> str:
     for _ in range(5):
         out = run(args=args, timeout=30).stdout
@@ -1088,20 +1072,9 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         help="for a Dot that shows no light and needs its test point shorted:"
         " wait for its bootrom, say when the short may come off, then root it",
     )
-    parser.add_argument(
-        "--delay",
-        const=10,
-        default=0,
-        help="count down before each stage, 10 seconds unless given, so a"
-        " recording shows the Dot settled in each state; implies --verbose",
-        metavar="SECONDS",
-        nargs="?",
-        type=int,
-    )
     options = parser.parse_args()
-    ARGS.delay = options.delay
     ARGS.short = options.short
-    ARGS.verbose = options.verbose or options.delay > 0
+    ARGS.verbose = options.verbose
     for tool in ("adb", "fastboot"):
         if not shutil.which(tool):
             _die(message=tool + " not found: install Android platform-tools")

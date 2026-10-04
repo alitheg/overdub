@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, BinaryIO, NamedTuple, NoReturn, TextIO
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-ARGS = argparse.Namespace(dd="dd", delay=0, shown=None, verbose=False)
+ARGS = argparse.Namespace(dd="dd", shown=None, verbose=False)
 AS_ROOT = (
     "run this as your own user, not as root or with sudo: the downloads would"
     " belong to root, and on Linux udev rules let a user open the Dot"
@@ -188,7 +188,6 @@ class Progress:
         self.step += 1
         about = f"(~{estimate})"
         self.line = f"[{self.step:2d}/{self.steps}] {label:<44} {about:<10} ... "
-        delay(f"[{self.step:2d}/{self.steps}] {label}")
         self.ts = time.monotonic()
         if ARGS.verbose:
             show(text=self.line.rstrip())
@@ -365,19 +364,6 @@ def command(
     if ARGS.verbose:
         show(text=f"{clock()}   exit {result.returncode}")
     return result
-
-
-def delay(label: str) -> None:
-    if not ARGS.delay:
-        return
-    for left in range(ARGS.delay, 0, -1):
-        show(
-            end="",
-            flush=True,
-            text=f"\r{clock()} next: {label}; starting in {left:2d}s",
-        )
-        time.sleep(1)
-    show(text=f"\r{clock()} next: {label}; starting now      ")
 
 
 def devices(args: list[str]) -> str:
@@ -558,20 +544,9 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         action="store_true",
         help="print each adb command, its exit status and the time",
     )
-    parser.add_argument(
-        "--delay",
-        const=5,
-        default=0,
-        help="count down before each step, 5 seconds unless given, so a"
-        " recording shows the Dot at each step; implies --verbose",
-        metavar="SECONDS",
-        nargs="?",
-        type=int,
-    )
     options = parser.parse_args()
     build = options.build
-    ARGS.delay = options.delay
-    ARGS.verbose = options.verbose or options.delay > 0
+    ARGS.verbose = options.verbose
     if not shutil.which("adb"):
         _die(message="adb not found: install Android platform-tools")
     check_user()
