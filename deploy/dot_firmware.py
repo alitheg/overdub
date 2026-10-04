@@ -11,6 +11,7 @@ import argparse
 import base64
 import bz2
 import contextlib
+import dataclasses
 import enum
 import gzip
 import hashlib
@@ -38,9 +39,7 @@ from typing import IO, TYPE_CHECKING, BinaryIO, NamedTuple, NoReturn, TextIO
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-ARGS = argparse.Namespace(
-    command="", dd="dd", probing=False, short=False, shown=None, verbose=False
-)
+ARGS = argparse.Namespace(command="", verbose=False)
 AS_ROOT = (
     "run this as your own user, not as root or with sudo: the downloads would"
     " belong to root, and on Linux udev rules let a user open the Dot"
@@ -570,6 +569,17 @@ class Progress:
             count += 1
 
 
+@dataclasses.dataclass
+class Session:
+    dd: str = "dd"
+    probing: bool = False
+    short: bool = False
+    shown: Kind | None = None
+
+
+SESSION = Session()
+
+
 class State(enum.Enum):
     AMONET_V1_TWRP = "amonet-v1-twrp"
     AMONET_V2_TWRP = "amonet-v2-twrp"
@@ -635,9 +645,9 @@ class WireType(enum.IntEnum):
 def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
     if PROGRESS.halt():
         print()
-    if ARGS.shown not in {None, Kind.ERROR}:
+    if SESSION.shown not in {None, Kind.ERROR}:
         print()
-    ARGS.shown = Kind.ERROR
+    SESSION.shown = Kind.ERROR
     text = prefix + message
     if "\n" not in text:
         text = textwrap.fill(text, 79)
@@ -711,9 +721,9 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
     shutil.copyfile(payload, amonet / "brom-payload" / "build" / "payload.bin")
     log_path = CACHE / "bootrom.log"
     env = dict(os.environ, PYTHONPATH=str(wheel), PYTHONUNBUFFERED="1")
-    if ARGS.short:
+    if SESSION.short:
         env["OVERDUB_ERASED"] = str(ERASED)
-    if not erase and not ARGS.short:
+    if not erase and not SESSION.short:
         with contextlib.suppress(subprocess.TimeoutExpired):
             subprocess.run(
                 [sys.executable, "-c", RESET_PY],
@@ -738,13 +748,13 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             stdin=subprocess.PIPE,
             stdout=log,
         )
-        if not ARGS.short:
+        if not SESSION.short:
             brom.stdin.write(b"\n" * 5)
             brom.stdin.close()
         started = time.monotonic()
-        while time.monotonic() - started < (30 if ARGS.short else 3):
+        while time.monotonic() - started < (30 if SESSION.short else 3):
             if brom.poll() is not None or (
-                ARGS.short
+                SESSION.short
                 and "Waiting for bootrom" in log_path.read_text(errors="replace")
             ):
                 break
@@ -761,7 +771,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             if failure:
                 brom.kill()
                 _die(message=failure)
-        elif ARGS.short:
+        elif SESSION.short:
             say(
                 code=ANSIColor.YELLOW,
                 text="Short the Dot's test point and plug it in. The run waits for"
@@ -778,7 +788,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             text = log_path.read_text(errors="replace")
             if "Found port" in text:
                 break
-            if ARGS.short and text.count("Ignoring the preloader") > missed:
+            if SESSION.short and text.count("Ignoring the preloader") > missed:
                 missed = text.count("Ignoring the preloader")
                 if sys.stdout.isatty():
                     print()
@@ -790,11 +800,11 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                 status("Waiting for the bootrom.")
             if text.count("Cannot open") > unopened:
                 unopened = text.count("Cannot open")
-                if ARGS.short and sys.stdout.isatty():
+                if SESSION.short and sys.stdout.isatty():
                     print()
                 said = "Cannot open" + text.split("Cannot open")[-1].splitlines()[0]
                 said += ". The run keeps trying."
-                if ARGS.short:
+                if SESSION.short:
                     warn(said)
                     status("Waiting for the bootrom.")
                 else:
@@ -807,7 +817,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                     message="the Dot's bootrom did not show up as a serial port.\n"
                     + no_port_help()
                 )
-        if ARGS.short and brom.poll() is None:
+        if SESSION.short and brom.poll() is None:
             countdown()
             with contextlib.suppress(OSError):
                 brom.stdin.write(b"\n" * 5)
@@ -823,7 +833,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             _die(message=f"v1.1.0's bootrom step did not finish; see {log_path}")
     if brom.returncode != 0:
         said = log_path.read_text(errors="replace")
-        if ARGS.short and (
+        if SESSION.short and (
             "The eMMC did not answer" in said or "expected pattern" in said
         ):
             _die(
@@ -1007,7 +1017,7 @@ def command(  # ruff: ignore[too-many-arguments]
     stdout: int | None = None,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    loud = ARGS.verbose and not ARGS.probing
+    loud = ARGS.verbose and not SESSION.probing
     if loud:
         show(text=f"{clock()} $ {' '.join(map(str, args))}")
     result = subprocess.run(
@@ -1583,7 +1593,7 @@ def main() -> None:
     check_adb()
     move_old_caches()
     if options.command == "root":
-        ARGS.short = options.short
+        SESSION.short = options.short
         PROGRESS.steps = ROOT_STEPS
         root()
     else:
@@ -1748,7 +1758,7 @@ def read_sectors(*, count: int, start: int) -> bytes:
         args=[
             "adb",
             "exec-out",
-            f"{ARGS.dd} if={DISK} bs=512 skip={start} count={count} 2>/dev/null",
+            f"{SESSION.dd} if={DISK} bs=512 skip={start} count={count} 2>/dev/null",
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -1875,7 +1885,7 @@ def restore(
         restore_failed("the preloader did not reach the Dot; do not reboot")
     rshell(
         command="echo 0 > /sys/block/mmcblk0boot0/force_ro; "
-        f"{ARGS.dd} if={staged} of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
+        f"{SESSION.dd} if={staged} of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
         "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
         "echo 3 > /proc/sys/vm/drop_caches"
     )
@@ -1935,12 +1945,12 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         if current not in {State.NONE, State.STARTING}:
             ERASED.unlink(missing_ok=True)
         if current != State.NONE:
-            ARGS.short = False
-        if current == State.NONE and (ERASED.exists() or ARGS.short) and not resumed:
+            SESSION.short = False
+        if current == State.NONE and (ERASED.exists() or SESSION.short) and not resumed:
             prefetch()
             resumed = True
             done.add(State.V1_FASTBOOT)
-            if not ARGS.short:
+            if not SESSION.short:
                 say(
                     code=ANSIColor.YELLOW,
                     text="The last run stopped during the downgrade to amonet"
@@ -2116,9 +2126,9 @@ def say(*, code: ANSIColor | None = None, text: str) -> None:
 
 
 def show(*, kind: Kind = Kind.INFO, text: str, **options: str | bool) -> None:
-    if ARGS.shown not in {None, kind}:
+    if SESSION.shown not in {None, kind}:
         print()
-    ARGS.shown = kind
+    SESSION.shown = kind
     print(text, **options)
 
 
@@ -2130,13 +2140,13 @@ def since(start: float) -> str:
 
 
 def state() -> State:
-    ARGS.probing = True
+    SESSION.probing = True
     try:
         current = probe()
     except subprocess.TimeoutExpired:
         current = State.STARTING
     finally:
-        ARGS.probing = False
+        SESSION.probing = False
     return current
 
 
@@ -2196,7 +2206,7 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
         rshell(command="toybox dd --help >/dev/null 2>&1 && echo yes").split("\n")[-1]
         == "yes"
     ):
-        ARGS.dd = "toybox dd"
+        SESSION.dd = "toybox dd"
     tools = rshell(
         command="m=; for t in sgdisk mke2fs blockdev md5sum; do"
         ' command -v "$t" >/dev/null 2>&1 || which "$t" >/dev/null 2>&1'
@@ -2500,13 +2510,14 @@ def write(
     else:
         bs, offset, count = 512, sector, n // 512
     verify = (
-        f"{ARGS.dd} if={DISK} bs={bs} skip={offset} count={count} 2>/dev/null | md5sum"
+        f"{SESSION.dd} if={DISK} bs={bs} skip={offset} count={count} 2>/dev/null"
+        " | md5sum"
     )
     want = digest(kind="md5", path=path)
     head = min(n, HEAD_CHECK)
     PROGRESS.begin(estimate=estimate, label=label)
     same_head = head == n or not md5_mismatch(
-        command=f"{ARGS.dd} if={DISK} bs={bs} skip={offset} count={head // bs}"
+        command=f"{SESSION.dd} if={DISK} bs={bs} skip={offset} count={head // bs}"
         " 2>/dev/null | md5sum",
         want=digest(kind="md5", limit=head, path=path),
     )
@@ -2530,9 +2541,9 @@ def write(
             restore_failed(
                 f"{label} did not reach the Dot; do not reboot:\n{pushed.stdout}"
             )
-        notrunc = " conv=notrunc" if ARGS.dd == "toybox dd" else ""
+        notrunc = " conv=notrunc" if SESSION.dd == "toybox dd" else ""
         done = rshell(
-            command=f"{ARGS.dd} if={staged} of={DISK} bs={bs} seek={offset}"
+            command=f"{SESSION.dd} if={staged} of={DISK} bs={bs} seek={offset}"
             f"{notrunc} && rm -f {staged} && echo written"
         )
         if done.split("\n")[-1] != "written":
