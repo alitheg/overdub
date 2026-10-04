@@ -51,7 +51,6 @@ AS_ROOT = (
 )
 BCB = b"\0ABB\x01\x8f\0"
 BCB_OFFSET = 0x360
-BLOCK_SIZE_FIELD = 3
 BOOTROM_PY = """\
 import os
 import pathlib
@@ -179,7 +178,6 @@ mountpoint -q /data
 """
 DISK = "/dev/block/mmcblk0"
 DOT_TMP = pathlib.PurePosixPath("/tmp")  # ruff: ignore[hardcoded-temp-file]
-DST_EXTENTS_FIELD = 6
 FASTBOOT_MODE = (
     "Unplug the USB cable, press and hold the action button (the one with a dot),"
     " plug the cable back in, and let go when the light ring turns green."
@@ -238,8 +236,6 @@ adb kill-server
 Then run it again with the new group, which a new login also has:
 
 """  # ruff: ignore[line-too-long]
-OPERATIONS_FIELD = 8
-PARTITIONS_FIELD = 13
 PAYLOAD_VERSION = 2
 
 
@@ -250,9 +246,6 @@ PYSERIAL_URL = (
     "https://files.pythonhosted.org/packages/07/bc/"
     "587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/" + PYSERIAL
 )
-REPLACE = 0
-REPLACE_BZ = 1
-REPLACE_XZ = 8
 
 
 RESET_PY = """\
@@ -370,18 +363,6 @@ VERIFIED: set[pathlib.Path] = set()
 WAIT = 600
 
 
-WIRE_FIXED32 = 5
-
-
-WIRE_FIXED64 = 1
-
-
-WIRE_LEN = 2
-
-
-WIRE_VARINT = 0
-
-
 WRITES = (
     ("system", "system_a", "write the system image to system_a", "4 min"),
     ("system", "system_b", "write the system image to system_b", "4 min"),
@@ -457,6 +438,16 @@ BUILDS = {
 }
 
 
+class ExtentField(enum.IntEnum):
+    START_BLOCK = 1
+    NUM_BLOCKS = 2
+
+
+class InfoField(enum.IntEnum):
+    SIZE = 1
+    HASH = 2
+
+
 class Kind(enum.Enum):
     ERROR = "error"
     INFO = "info"
@@ -466,6 +457,30 @@ class Kind(enum.Enum):
 class LK(enum.Enum):
     V1 = "f379dba-20170906_000423"
     V2 = "63cb91b-20221007_072309"
+
+
+class ManifestField(enum.IntEnum):
+    BLOCK_SIZE = 3
+    PARTITIONS = 13
+
+
+class OperationField(enum.IntEnum):
+    TYPE = 1
+    DATA_OFFSET = 2
+    DATA_LENGTH = 3
+    DST_EXTENTS = 6
+
+
+class OperationType(enum.IntEnum):
+    REPLACE = 0
+    REPLACE_BZ = 1
+    REPLACE_XZ = 8
+
+
+class PartitionField(enum.IntEnum):
+    NAME = 1
+    NEW_INFO = 7
+    OPERATIONS = 8
 
 
 class Progress:
@@ -552,6 +567,13 @@ class State(enum.Enum):
     STOCK_FASTBOOT = "stock-fastboot"
     V1_FASTBOOT = "v1-fastboot"
     V2_FASTBOOT = "v2-fastboot"
+
+
+class WireType(enum.IntEnum):
+    VARINT = 0
+    FIXED64 = 1
+    LEN = 2
+    FIXED32 = 5
 
 
 def _die(*, message: str, prefix: str = "ERROR: ") -> NoReturn:
@@ -1090,17 +1112,17 @@ def extract(*, ota: pathlib.Path, work: pathlib.Path) -> None:  # ruff: ignore[c
         block = 4096
         partitions = {}
         for fn, _, v in fields(manifest):
-            if fn == BLOCK_SIZE_FIELD:
+            if fn == ManifestField.BLOCK_SIZE:
                 block = v
-            if fn == PARTITIONS_FIELD:
+            if fn == ManifestField.PARTITIONS:
                 d, ops = {}, []
                 for a, _, c in fields(v):
-                    if a == OPERATIONS_FIELD:
+                    if a == PartitionField.OPERATIONS:
                         ops.append(c)
                     else:
                         d[a] = c
-                partitions[d[1].decode()] = (
-                    {a: c for a, _, c in fields(d[7])},
+                partitions[d[PartitionField.NAME].decode()] = (
+                    {a: c for a, _, c in fields(d[PartitionField.NEW_INFO])},
                     ops,
                 )
         with z.open("payload.bin") as payload:
@@ -1109,36 +1131,39 @@ def extract(*, ota: pathlib.Path, work: pathlib.Path) -> None:  # ruff: ignore[c
                     _die(message=f"the OTA has no {name} image")
                 info, ops = partitions[name]
                 path = work / (name + ".img")
-                if path.is_file() and digest(kind="sha256", path=path) == info[2].hex():
+                if (
+                    path.is_file()
+                    and digest(kind="sha256", path=path) == info[InfoField.HASH].hex()
+                ):
                     passed(f"{name:>{max(map(len, IMAGES))}} matches the manifest")
                     continue
-                img = bytearray(info[1])
+                img = bytearray(info[InfoField.SIZE])
                 for op in ops:
                     o, extents = {}, []
                     for a, _, c in fields(op):
-                        if a == DST_EXTENTS_FIELD:
+                        if a == OperationField.DST_EXTENTS:
                             extents.append({x: y for x, _, y in fields(c)})
                         else:
                             o[a] = c
-                    payload.seek(base + o.get(2, 0))
-                    blob = payload.read(o.get(3, 0))
-                    kind = o[1]
-                    if kind == REPLACE:
+                    payload.seek(base + o.get(OperationField.DATA_OFFSET, 0))
+                    blob = payload.read(o.get(OperationField.DATA_LENGTH, 0))
+                    kind = o[OperationField.TYPE]
+                    if kind == OperationType.REPLACE:
                         raw = blob
-                    elif kind == REPLACE_BZ:
+                    elif kind == OperationType.REPLACE_BZ:
                         raw = bz2.decompress(blob)
-                    elif kind == REPLACE_XZ:
+                    elif kind == OperationType.REPLACE_XZ:
                         raw = lzma.decompress(blob)
                     else:
                         _die(message=f"{name} has op type {kind}")
                     pos = 0
                     for e in extents:
-                        n = e[2] * block
-                        at = e.get(1, 0) * block
+                        n = e[ExtentField.NUM_BLOCKS] * block
+                        at = e.get(ExtentField.START_BLOCK, 0) * block
                         img[at : at + n] = raw[pos : pos + n]
                         pos += n
-                path.write_bytes(memoryview(img)[: info[1]])
-                if digest(kind="sha256", path=path) != info[2].hex():
+                path.write_bytes(memoryview(img)[: info[InfoField.SIZE]])
+                if digest(kind="sha256", path=path) != info[InfoField.HASH].hex():
                     _die(message=name + " does not match the manifest")
                 passed(f"{name:>{max(map(len, IMAGES))}} matches the manifest")
 
@@ -1216,16 +1241,16 @@ def fields(b: bytes) -> Iterator[tuple[int, int, int | bytes]]:
     while i < len(b):
         k, i = varint(b=b, i=i)
         fn, wt = k >> 3, k & 7
-        if wt == WIRE_VARINT:
+        if wt == WireType.VARINT:
             v, i = varint(b=b, i=i)
-        elif wt == WIRE_LEN:
+        elif wt == WireType.LEN:
             n, i = varint(b=b, i=i)
             v = b[i : i + n]
             i += n
-        elif wt == WIRE_FIXED64:
+        elif wt == WireType.FIXED64:
             v = b[i : i + 8]
             i += 8
-        elif wt == WIRE_FIXED32:
+        elif wt == WireType.FIXED32:
             v = b[i : i + 4]
             i += 4
         else:
