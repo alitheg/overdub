@@ -591,6 +591,7 @@ class State(enum.Enum):
     STOCK_BOOTED = "stock-booted"
     STOCK_FASTBOOT = "stock-fastboot"
     V1_FASTBOOT = "v1-fastboot"
+    V2_BOOTED = "v2-booted"
     V2_FASTBOOT = "v2-fastboot"
 
 
@@ -1718,12 +1719,14 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
         return State.BBOE_V1_TWRP
     if adb_state == "device":
         booted = rshell(command="getprop sys.boot_completed", timeout=30) == "1"
-        if booted and "uid=0" in rshell(command="su -c id", timeout=30):
-            return State.ROOTED
         if rshell(command="getprop ro.build.version.name", timeout=30).startswith(
             "Fire OS 6"
         ):
+            if "uid=0" in rshell(command="id; su -c id", timeout=30):
+                return State.V2_BOOTED
             return State.STOCK_BOOTED
+        if booted and "uid=0" in rshell(command="su -c id", timeout=30):
+            return State.ROOTED
         return State.BOOTED
     return State.NONE
 
@@ -1986,6 +1989,11 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     text="This Dot appears to be unmodified. To unlock and root it,"
                     " start it in fastboot mode. " + FASTBOOT_MODE
                 )
+            elif current == State.V2_BOOTED and current not in done:
+                say(
+                    text="This Dot runs rooted Fire OS 6 on amonet v2.0.0."
+                    " Rebooting it into recovery."
+                )
             elif current == State.NONE and not done and guided:
                 show(text="Waiting for the Dot in fastboot mode, with a green ring.")
             elif current == State.NONE and not done:
@@ -2034,6 +2042,11 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         elif current == State.AMONET_V2_TWRP:
             downgrade(from_twrp=True)
             done.update((State.V2_FASTBOOT, State.V1_FASTBOOT))
+        elif current == State.V2_BOOTED:
+            run(args=["adb", "reboot", "recovery"], timeout=60)
+            PROGRESS.begin(
+                estimate="40 s", label="waiting for v2.0.0 recovery to start", step=2
+            )
         elif current == State.V2_FASTBOOT:
             downgrade(from_twrp=False)
             done.update((State.AMONET_V2_TWRP, State.V1_FASTBOOT))

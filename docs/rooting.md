@@ -8,6 +8,7 @@ finds, and stops when the Dot is rooted.
 |---|---|---|
 | stock-booted | `adb get-state` says `unauthorized`, or Fire OS 6 without root | prints the fastboot gesture |
 | stock-fastboot | `unlock_status` is `false` | amonet v2.0.0 fastbrick |
+| v2-booted | Fire OS 6, and `id` or `su -c id` answers uid 0 | `adb reboot recovery`, into v2.0.0's TWRP |
 | amonet-v2-twrp, v2-fastboot | unlocked, `lk_build_desc` is not v1's | downgrade to amonet v1.1.0 |
 | v1-fastboot | `lk_build_desc` is `f379dba-20170906_000423` | v1 TEE and TWRP 3.7.0_9-bboe1, then recovery |
 | amonet-v1-twrp | recovery, v1's `lk_build_desc`, another `ro.twrp.version`, `mtp` in `sys.usb.config` | writes TWRP 3.7.0_9-bboe1 to `recovery`, reboots into it |
@@ -23,6 +24,11 @@ finds, and stops when the Dot is rooted.
 - An empty `lk_build_desc` would read as v2's and repeat the downgrade, `boot0`
   erase included. So an empty or timed-out fastboot read, and any poll that
   times out, reads as `starting` too.
+- A rooted Fire OS 6 Dot is on amonet v2.0.0, because Fire OS 6 has no root
+  without the unlock. Its root is Magisk's `su`, or an `adbd` that runs as
+  root and no `su` at all, which the XDA thread's `boot-root.zip` leaves. So
+  the probe asks both. Before this state, the first read as rooted and the
+  second as stock-booted, which asked for a gesture `adb` can replace.
 - `su` answers about 27 seconds into Fire OS 5's first boot, while
   `dumpsys package` still answers `Can't find service: package`. So rooted
   also needs `sys.boot_completed` to be 1.
