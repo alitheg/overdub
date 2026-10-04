@@ -152,25 +152,7 @@ main.main()
 """
 BY_NAME = "/dev/block/platform/mtk-msdc.0/by-name"
 CHAIN_TEE = ("tee2", "tee1")
-CLEAR_BOOT0 = (
-    "d=dd; toybox dd --help >/dev/null 2>&1 && d='toybox dd'; "
-    "echo 0 > /sys/block/mmcblk0boot0/force_ro; "
-    "$d if=/dev/zero of=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null; "
-    "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
-    "echo 3 > /proc/sys/vm/drop_caches; "
-    'echo "$($d if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null | wc -c)'
-    " $($d if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null"
-    " | tr -d '\\0' | wc -c)\""
-)
 CMDLINE_SIZE = 512
-DATA_SH = f"""\
-set -e
-umount /sdcard /data 2>/dev/null || true
-d={BY_NAME}/userdata
-mke2fs -q -t ext4 -b 4096 "$d" $(( $(blockdev --getsize64 "$d") / 4096 - 256 ))
-mount -t ext4 "$d" /data
-mountpoint -q /data
-"""
 DISK = "/dev/block/mmcblk0"
 DOT_TMP = pathlib.PurePosixPath("/tmp")  # ruff: ignore[hardcoded-temp-file]
 EMOS_PY = """\
@@ -215,19 +197,11 @@ FASTBOOT_MODE = (
     "Unplug the USB cable, press and hold the action button (the one with a dot),"
     " plug the cable back in, and let go when the light ring turns green."
 )
-FLUSH = "sync && echo 3 > /proc/sys/vm/drop_caches && echo flushed"
 FTVDB = "https://ftvdb.com/echo/firmware/com.amazon.biscuit.android.os/"
 GPT_HEADER_SIZE = 92
 HEAD_CHECK = 1 << 20
 IMAGES = ("preloader", "lk", "tee", "boot", "system")
 LK_DESC = re.compile(r"[0-9a-f]{7}-\d{8}_\d{6}")
-MAGISK_SH = """\
-set -e
-mountpoint -q /data
-cd /; cpio -idu < /tmp/magisk.cpio 2>/dev/null
-chmod 700 /data/adb; chmod -R 755 /data/adb/magisk; chmod 600 /data/adb/magisk.db
-sync
-"""
 MEGA = 1e6
 MINUTE = 60
 MIRROR = "https://github.com/hkfuertes/amazon_device_biscuit/releases/download/none"
@@ -235,8 +209,6 @@ MORE_THAN_ONE = (
     "more than one Dot on USB: set ANDROID_SERIAL to one's serial (adb"
     " devices lists them)"
 )
-
-
 NEW_GROUP = """this shell predates its user joining plugdev. Log in again, or run:
 
 adb kill-server
@@ -283,75 +255,23 @@ is, and keeps running until the Dot is rooted: it waits while the Dot reboots,
 and while you take a step it asks for. Stopped, it picks up where it left off
 on the next run."""
 ROOT_STEPS = 9
-
-
 SHORT_WAIT = 5
 SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
-
-
 STOCK_HELP = """Return a Dot rooted on amonet v1.1.0 or v2.0.0 to the stock Fire OS 6
 BUILD, from rooted Fire OS, from TWRP, or from EchoMuse's emOS."""
-
-
 STOCK_PARTITIONS = 16
-
-
 STOCK_STEPS = 16
-
-
-SYSTEM_LOCK = threading.Lock()
-
-
-SYSTEM_SH = """\
-set -e
-m=/tmp/fireos-system
-mkdir -p $m
-mountpoint -q $m || mount -t ext4 {system} $m
-f=$m/etc/init.fosflags.sh
-sed -i 's/if \\[ $(( $FOS_FLAGS_ADB_ON & $FOSFLAGS )) != 0 \\]; then/if true; then/; \
-s/^\\( *\\)unset_adb_persistent_property$/\\1true/' "$f"
-for h in {hosts}; do
-  grep -q " $h\\$" $m/etc/hosts || echo "127.0.0.1 $h" >> $m/etc/hosts
-done
-grep -q 'if true; then' "$f"
-grep -q '^ *unset_adb_persistent_property$' "$f" && exit 1
-sync; umount $m
-"""
-
-
 TWRP_VERSION = "3.7.0_9-bboe2"
-
-
 TWRP_VERSIONS = ("3.2.", "3.7.")
-
-
-UNMOUNT = (
-    'for m in $(grep "^/dev/block" /proc/mounts | cut -d" " -f2); do umount "$m";'
-    ' done; echo "left:$(grep "^/dev/block" /proc/mounts | cut -d" " -f2'
-    ' | tr "\\n" " ")"'
-)
-
-
 UPDATER = "com.amazon.device.software.ota"
-
-
 UPDATE_HOSTS = (
     "updates.amazon.com",
     "softwareupdates.amazon.com",
     "amzndigitaldownloads.edgesuite.net",
     "amzdigital-a.akamaihd.com",
 )
-
-
 USER_SERIAL = os.environ.get("ANDROID_SERIAL")
-
-
 VARINT_MORE = 0x80
-
-
-VERIFIED: set[pathlib.Path] = set()
-
-
 WAIT = 600
 
 
@@ -434,47 +354,35 @@ AMONET_V1 = Download(
     sha256="bd4d3a18b6b6e9ff6e49a4739159a81020673202795cb3959f7c9ff24351b663",
     url=MIRROR + "/amonet-biscuit-v1.1.0.zip",
 )
-
-
 AMONET_V2 = Download(
     folder="v2",
     name="amonet-biscuit-v2.0.0.zip",
     sha256="98297293701082bc7272efe077f941c56fc7b6e1f27ef6f2e93b6e4c6fc7b62d",
     url=MIRROR + "/amonet-biscuit-v2.0.0.zip",
 )
-
-
 FIREOS = Download(
     name="update-kindle-csm_biscuit-272.6.8.0_user_680767620.bin",
     sha256="6ababc517529938f0d1e836c3410a91df19683ae62d7fca9e2ca57320d5d2faa",
     url="https://d1s31zyz7dcc2d.cloudfront.net/47a1457e0802980eb32f63cd3ce355c0/"
     "update-kindle-csm_biscuit-272.6.8.0_user_680767620.bin",
 )
-
-
 MAGISK = Download(
     name="Magisk-v17.3.zip",
     sha256="18e46b16b25ebe691c282fe311beccd4811cd533848a64e2efbd754fb85efde7",
     url="https://github.com/topjohnwu/Magisk/releases/download/v17.3/Magisk-v17.3.zip",
 )
-
-
 PYSERIAL = Download(
     name="pyserial-3.5-py2.py3-none-any.whl",
     sha256="c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0",
     url="https://files.pythonhosted.org/packages/07/bc/"
     "587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl",
 )
-
-
 TWRP = Download(
     name=f"twrp-{TWRP_VERSION}-biscuit.img",
     sha256="f59052713a6580a1477490b2f9cad80e9b31d22408861b18fd442129a71f2ad9",
     url="https://github.com/bboe/twrp_device_amazon_echo-mt8163/releases/download/"
     f"v{TWRP_VERSION}/twrp-v{TWRP_VERSION}-biscuit.img",
 )
-
-
 LOCKS = {
     key: threading.Lock()
     for key in (AMONET_V1, AMONET_V2, FIREOS, MAGISK, PYSERIAL, TWRP, "v1", "v2")
@@ -614,9 +522,69 @@ class Session:
     probing: bool = False
     short: bool = False
     shown: Kind | None = None
+    system_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    verified: set[pathlib.Path] = dataclasses.field(default_factory=set)
 
 
 SESSION = Session()
+
+
+class Shell(enum.Enum):
+    CLEAR_BOOT0 = (
+        "d=dd; toybox dd --help >/dev/null 2>&1 && d='toybox dd'; "
+        "echo 0 > /sys/block/mmcblk0boot0/force_ro; "
+        "$d if=/dev/zero of=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null; "
+        "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
+        "echo 3 > /proc/sys/vm/drop_caches; "
+        'echo "$($d if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null | wc -c)'
+        " $($d if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null"
+        " | tr -d '\\0' | wc -c)\""
+    )
+    DATA = f"""\
+set -e
+umount /sdcard /data 2>/dev/null || true
+d={BY_NAME}/userdata
+mke2fs -q -t ext4 -b 4096 "$d" $(( $(blockdev --getsize64 "$d") / 4096 - 256 ))
+mount -t ext4 "$d" /data
+mountpoint -q /data
+"""
+    FLUSH = "sync && echo 3 > /proc/sys/vm/drop_caches && echo flushed"
+    MAGISK = """\
+set -e
+mountpoint -q /data
+cd /; cpio -idu < /tmp/magisk.cpio 2>/dev/null
+chmod 700 /data/adb; chmod -R 755 /data/adb/magisk; chmod 600 /data/adb/magisk.db
+sync
+"""
+    SYSTEM = """\
+set -e
+m=/tmp/fireos-system
+mkdir -p $m
+mountpoint -q $m || mount -t ext4 {system} $m
+f=$m/etc/init.fosflags.sh
+sed -i 's/if \\[ $(( $FOS_FLAGS_ADB_ON & $FOSFLAGS )) != 0 \\]; then/if true; then/; \
+s/^\\( *\\)unset_adb_persistent_property$/\\1true/' "$f"
+for h in {hosts}; do
+  grep -q " $h\\$" $m/etc/hosts || echo "127.0.0.1 $h" >> $m/etc/hosts
+done
+grep -q 'if true; then' "$f"
+grep -q '^ *unset_adb_persistent_property$' "$f" && exit 1
+sync; umount $m
+"""
+    TOOLS = (
+        "m=; for t in sgdisk mke2fs blockdev md5sum; do"
+        ' command -v "$t" >/dev/null 2>&1 || which "$t" >/dev/null 2>&1'
+        ' || m="$m $t"; done; echo "tools:$m"'
+    )
+    UNMOUNT = (
+        'for m in $(grep "^/dev/block" /proc/mounts | cut -d" " -f2); do umount "$m";'
+        ' done; echo "left:$(grep "^/dev/block" /proc/mounts | cut -d" " -f2'
+        ' | tr "\\n" " ")"'
+    )
+    WRITE = (
+        "dd if={src} of={dst} bs=1048576 2>/dev/null;"
+        " sync; echo 3 > /proc/sys/vm/drop_caches"
+    )
 
 
 class State(enum.Enum):
@@ -933,8 +901,6 @@ def cache_dir() -> pathlib.Path:
 
 
 CACHE = cache_dir()
-
-
 ERASED = CACHE / "boot0-erased"
 
 
@@ -1021,7 +987,7 @@ def check_user() -> None:
 
 
 def clear_boot0() -> None:
-    answer = rshell(command=CLEAR_BOOT0).split("\n")[-1].split()
+    answer = rshell(command=Shell.CLEAR_BOOT0.value).split("\n")[-1].split()
     if answer == ["4096", "0"]:
         return
     read, *still_set = answer or [""]
@@ -1249,7 +1215,7 @@ def erase_by_fastboot() -> str:
 
 
 def erase_from_twrp() -> str:
-    answer = rshell(command=CLEAR_BOOT0, timeout=60).split("\n")[-1].split()
+    answer = rshell(command=Shell.CLEAR_BOOT0.value, timeout=60).split("\n")[-1].split()
     if answer != ["4096", "0"]:
         return (
             "boot0's header did not read back as cleared, so the Dot was not"
@@ -1369,10 +1335,10 @@ def fetch(download: Download) -> pathlib.Path:
     with hold(LOCKS[download]):
         CACHE.mkdir(exist_ok=True, parents=True)
         path = CACHE / name
-        if path in VERIFIED or (
+        if path in SESSION.verified or (
             path.is_file() and digest(kind="sha256", path=path) == want
         ):
-            VERIFIED.add(path)
+            SESSION.verified.add(path)
             return path
         part = CACHE / (name + ".part")
         try:
@@ -1391,7 +1357,7 @@ def fetch(download: Download) -> pathlib.Path:
         if digest(kind="sha256", path=part) != want:
             _die(message=f"{name} does not hash to {want}")
         part.replace(path)
-        VERIFIED.add(path)
+        SESSION.verified.add(path)
         return path
 
 
@@ -1493,13 +1459,13 @@ def install_fireos() -> None:
     with tempfile.TemporaryDirectory(dir=CACHE) as tmp:
         work = pathlib.Path(tmp)
         PROGRESS.begin(estimate="5 s", label="formatting userdata", step=5)
-        if not rscript(body=DATA_SH, name="data.sh", work=work):
+        if not rscript(body=Shell.DATA.value, name="data.sh", work=work):
             _die(message="userdata did not format and mount")
         PROGRESS.begin(
             estimate="100 s", label="writing Fire OS 5.5.5.4's /system", step=6
         )
         write_system(system)
-        body = SYSTEM_SH.format(hosts=" ".join(UPDATE_HOSTS), system=system)
+        body = Shell.SYSTEM.value.format(hosts=" ".join(UPDATE_HOSTS), system=system)
         if not rscript(body=body, name="system.sh", work=work):
             _die(message="patching /system failed")
 
@@ -1510,8 +1476,7 @@ def install_fireos() -> None:
         final = DOT_TMP / "boot.img"
         push_checked(local=image, remote=final)
         rshell(
-            command=f"dd if={final} of={boot} bs=1048576 2>/dev/null;"
-            " sync; echo 3 > /proc/sys/vm/drop_caches",
+            command=Shell.WRITE.value.format(dst=boot, src=final),
             timeout=120,
         )
         blocks = image.stat().st_size // 4096
@@ -1541,7 +1506,7 @@ def install_magisk(*, magisk: pathlib.Path, work: pathlib.Path) -> None:
     archive = work / "magisk.cpio"
     archive.write_bytes(cpio(files))
     push_checked(local=archive, remote=DOT_TMP / "magisk.cpio")
-    if not rscript(body=MAGISK_SH, name="magisk.sh", work=work):
+    if not rscript(body=Shell.MAGISK.value, name="magisk.sh", work=work):
         _die(message="Magisk 17.3 did not install")
     names = sorted(name for name, (mode, _) in files.items() if stat.S_ISREG(mode))
     want = hashlib.md5(
@@ -1863,8 +1828,7 @@ def replace_twrp() -> None:
     push_checked(local=twrp, remote=remote)
     recovery = f"{BY_NAME}/recovery"
     rshell(
-        command=f"dd if={remote} of={recovery} bs=1048576 2>/dev/null;"
-        " sync; echo 3 > /proc/sys/vm/drop_caches",
+        command=Shell.WRITE.value.format(dst=recovery, src=remote),
         timeout=120,
     )
     sectors = twrp.stat().st_size // 512
@@ -2311,11 +2275,7 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
         == "yes"
     ):
         SESSION.dd = "toybox dd"
-    tools = rshell(
-        command="m=; for t in sgdisk mke2fs blockdev md5sum; do"
-        ' command -v "$t" >/dev/null 2>&1 || which "$t" >/dev/null 2>&1'
-        ' || m="$m $t"; done; echo "tools:$m"'
-    ).split("\n")[-1]
+    tools = rshell(command=Shell.TOOLS.value).split("\n")[-1]
     if not tools.startswith("tools:"):
         _die(message="the Dot did not answer which tools it has: " + tools)
     if tools != "tools:":
@@ -2499,7 +2459,7 @@ def system_chunks(*, dat: IO[bytes], ranges: list[tuple[int, int]]) -> Iterator[
 
 def system_image() -> tuple[pathlib.Path, str, int]:
     target = CACHE / f"system-{FIREOS.sha256[:12]}"
-    with hold(SYSTEM_LOCK):
+    with hold(SESSION.system_lock):
         if not (target / "md5").is_file():
             shutil.rmtree(target, ignore_errors=True)
             build_system(target)
@@ -2508,7 +2468,7 @@ def system_image() -> tuple[pathlib.Path, str, int]:
 
 
 def unmount(*, started: bool = False) -> None:
-    left = rshell(command=UNMOUNT).split("\n")[-1]
+    left = rshell(command=Shell.UNMOUNT.value).split("\n")[-1]
     if left.startswith("left:"):
         if not left[len("left:") :].strip():
             return
@@ -2652,7 +2612,7 @@ def write(
         )
         if done.split("\n")[-1] != "written":
             restore_failed(f"{label} failed; do not reboot:\n{done}")
-    if rshell(command=FLUSH).split("\n")[-1] != "flushed":
+    if rshell(command=Shell.FLUSH.value).split("\n")[-1] != "flushed":
         restore_failed(label + " could not be flushed; do not reboot")
     wrong = md5_mismatch(command=verify, want=want)
     if wrong:
