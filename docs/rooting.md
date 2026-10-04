@@ -256,6 +256,14 @@ ring read white.
 - amonet v1.1.0's bootrom step needs pyserial. The script puts the pinned pure
   wheel from PyPI on the child's `PYTHONPATH`, and Python imports it straight
   from the zip. Nothing is installed.
+- Each child is the script itself, run as `dot_firmware.py _child <name>`.
+  pyserial is on the child's path only, and the bootrom child also needs
+  amonet's `modules` directory, so their imports wait until the child runs.
+- A child drops the script's own directory from its import path first. A
+  script downloaded to `~/Downloads` would otherwise import any `serial.py`
+  there in place of the pinned wheel. It checks the entry first: under
+  `PYTHONSAFEPATH` Python adds no such directory, and the first entry is the
+  wheel.
 - `adb get-state` reports `unauthorized` on stderr, so the script reads both
   streams.
 - Without `ANDROID_SERIAL`, both subcommands use the one Dot on USB in
@@ -353,13 +361,14 @@ ring read white.
 - main.py's `serial_ports()` silently skips a port it cannot open, and waits
   forever. So the script gives it 60 seconds after the reboot to log
   `Found port`, then stops it and says why a port may be missing.
-- The script runs main.py through `BOOTROM_PY`, with v2.0.0's payload from the
-  zip the fastbrick already uses. It writes 64 blocks per command, `0x1003`.
-  On macOS and Windows the step takes 18 s from `Found port` to the reboot.
+- The script runs main.py through `child_bootrom`, with v2.0.0's payload from
+  the zip the fastbrick already uses. It writes 64 blocks per command,
+  `0x1003`. On macOS and Windows the step takes 18 s from `Found port` to the
+  reboot.
 - v2.0.0's payload ends a 512-byte block read and a 256-byte RPMB read on a
   full packet, and Windows' VCOM driver waits for a short packet. So
-  `BOOTROM_PY` follows each read with a 4-byte read, `0x5000`, and drops those
-  4 bytes.
+  `child_bootrom` follows each read with a 4-byte read, `0x5000`, and drops
+  those 4 bytes.
 - v1.1.0's `fastboot-step.sh` ships a Linux-only fastboot. The script runs its
   three commands with the host's fastboot instead: `bin/tz.img` to `tee2`,
   TWRP 3.7.0_9-bboe2 to `recovery` in place of v1.1.0's `bin/twrp.img`, then

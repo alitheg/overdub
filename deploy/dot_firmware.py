@@ -46,153 +46,13 @@ AS_ROOT = (
 )
 BCB = b"\0ABB\x01\x8f\0"
 BCB_OFFSET = 0x360
-BOOTROM_PY = """\
-import os
-import pathlib
-import struct
-import time
-
-import common
-import main
-import serial
-from logger import log
-from serial.tools import list_ports
-
-marker = os.environ.get("OVERDUB_ERASED")
-start_payload = main.load_payload
-
-
-def emmc_read(self: common.Device, idx: int) -> bytes:
-    self.dev.write(struct.pack(">III", 0xF00DD00D, 0x1000, idx))
-    return read_flushed(self, 0x200)
-
-
-def emmc_write_blocks(self: common.Device, idx: int, data: bytes) -> None:
-    self.dev.write(struct.pack(">IIII", 0xF00DD00D, 0x1003, idx, len(data) // 0x200))
-    self.dev.write(data)
-    if self.dev.read(4) != b"\\xd0\\xd0\\xd0\\xd0":
-        msg = "device failure"
-        raise RuntimeError(msg)
-
-
-def flash_data(
-    dev: common.Device, data: bytes, start_block: int, max_size: int = 0
-) -> None:
-    if marker:
-        pathlib.Path(marker).touch()
-    data += b"\\0" * (-len(data) % 0x200)
-    if max_size and len(data) > max_size:
-        msg = "data too big to flash"
-        raise RuntimeError(msg)
-    for x in range(0, len(data), 64 * 0x200):
-        dev.emmc_write_blocks(start_block + x // 0x200, data[x : x + 64 * 0x200])
-
-
-def read_flushed(self: common.Device, size: int) -> bytes:
-    self.dev.write(struct.pack(">IIII", 0xF00DD00D, 0x5000, 0x201000, 4))
-    data = self.dev.read(size + 4)
-    if len(data) != size + 4:
-        msg = "read fail"
-        raise RuntimeError(msg)
-    return data[:size]
-
-
-def rpmb_read(self: common.Device) -> bytes:
-    self.dev.write(struct.pack(">II", 0xF00DD00D, 0x2000))
-    return read_flushed(self, 0x100)
-
-
-def find_device(self: common.Device, preloader: bool = False) -> None:
-    seen = {p.device: p.pid for p in list_ports.comports() if p.vid == 0x0E8D}
-    failed = {}
-    log("Waiting for bootrom")
-    while True:
-        pids = {p.device: p.pid for p in list_ports.comports() if p.vid == 0x0E8D}
-        seen = {port: pid for port, pid in seen.items() if port in pids}
-        failed = {port: at for port, at in failed.items() if port in pids}
-        for port, pid in sorted(pids.items()):
-            if pid is None or seen.get(port) == pid:
-                continue
-            if pid == 0x0003:
-                try:
-                    self.dev = serial.Serial(port, common.BAUD, timeout=common.TIMEOUT)
-                except serial.SerialException as e:
-                    at = failed.setdefault(port, time.monotonic())
-                    if at and time.monotonic() - at >= 1:
-                        failed[port] = 0
-                        log("Cannot open " + port + ": " + str(e))
-                    continue
-                log("Found port = " + port)
-                return
-            seen[port] = pid
-            if pid == 0x2000:
-                log("Ignoring the preloader on " + port)
-        time.sleep(0.25)
-
-
-def load_payload(dev: common.Device, path: str) -> None:
-    start_payload(dev, path)
-    try:
-        dev.emmc_switch(0)
-        answered = dev.emmc_read(0)[510:512] == b"\\x55\\xaa"
-    except RuntimeError:
-        answered = False
-    if not answered:
-        log("The eMMC did not answer")
-        raise SystemExit(3)
-
-
-common.Device.emmc_read = emmc_read
-common.Device.emmc_write_blocks = emmc_write_blocks
-common.Device.find_device = find_device
-common.Device.rpmb_read = rpmb_read
-main.flash_data = flash_data
-main.load_payload = load_payload
-main.main()
-"""
+BROM_PID = 0x0003
 BY_NAME = "/dev/block/platform/mtk-msdc.0/by-name"
 CHAIN_TEE = ("tee2", "tee1")
 CMDLINE_SIZE = 512
 DISK = "/dev/block/mmcblk0"
 DOT_TMP = pathlib.PurePosixPath("/tmp")  # ruff: ignore[hardcoded-temp-file]
-EMOS_PY = """\
-import sys
-import time
-
-import serial
-from serial.tools import list_ports
-
-action, want = sys.argv[1:3]
-ports = [
-    port.device
-    for port in list_ports.comports()
-    if (port.vid, port.pid) == (0x1949, 0x2007)
-    and want in ("", port.serial_number)
-]
-if action == "find" or len(ports) != 1:
-    print(len(ports))
-    sys.exit()
-try:
-    dev = serial.Serial(ports[0], 115200, timeout=0.2, write_timeout=1)
-except serial.SerialException:
-    print("denied")
-    sys.exit()
-with dev:
-    dev.reset_input_buffer()
-    dev.write(b"\\n")
-    seen = b""
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        seen += dev.read(256)
-        if seen.rstrip(b" ").endswith(b"password:"):
-            print("password")
-            sys.exit()
-        if seen.rstrip(b" ").endswith(b"#"):
-            dev.write(b"/init recovery\\n")
-            print("recovery")
-            sys.exit()
-print("silent")
-"""
+EMOS_USB_ID = (0x1949, 0x2007)
 FASTBOOT_MODE = (
     "Unplug the USB cable, press and hold the action button (the one with a dot),"
     " plug the cable back in, and let go when the light ring turns green."
@@ -202,6 +62,7 @@ GPT_HEADER_SIZE = 92
 HEAD_CHECK = 1 << 20
 IMAGES = ("preloader", "lk", "tee", "boot", "system")
 LK_DESC = re.compile(r"[0-9a-f]{7}-\d{8}_\d{6}")
+MEDIATEK_VID = 0x0E8D
 MEGA = 1e6
 MINUTE = 60
 MIRROR = "https://github.com/hkfuertes/amazon_device_biscuit/releases/download/none"
@@ -235,20 +96,8 @@ Then run it again with the new group, which a new login also has:
 
 """  # ruff: ignore[line-too-long]
 PAYLOAD_VERSION = 2
+PRELOADER_PID = 0x2000
 PUSH_TRIES = 3
-RESET_PY = """\
-import struct
-import serial
-from serial.tools import list_ports
-
-for port in list_ports.comports():
-    if port.vid == 0x0E8D:
-        try:
-            with serial.Serial(port.device, 115200, timeout=1, write_timeout=1) as dev:
-                dev.write(struct.pack(">II", 0xF00DD00D, 0x3000))
-        except serial.SerialException:
-            pass
-"""
 ROOT_HELP = """Unlock and root the Dot, from stock Fire OS 6 or from any point part
 way through, and leave it on rooted Fire OS 5.5.5.4. It detects where the Dot
 is, and keeps running until the Dot is rooted: it waits while the Dot reboots,
@@ -752,7 +601,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
     if not erase and not SESSION.short:
         with contextlib.suppress(subprocess.TimeoutExpired):
             subprocess.run(
-                [sys.executable, "-c", RESET_PY],
+                child("reset"),
                 check=False,
                 env=env,
                 stderr=subprocess.DEVNULL,
@@ -763,11 +612,11 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
     with log_path.open("w") as log:
         if ARGS.verbose:
             show(
-                text=f"{clock()} $ {sys.executable} -c BOOTROM_PY (amonet v1.1.0"
+                text=f"{clock()} $ {shlex.join(child('bootrom'))} (amonet v1.1.0"
                 " bootrom step, 64 blocks per write)"
             )
         brom = subprocess.Popen(
-            [sys.executable, "-c", BOOTROM_PY],
+            child("bootrom"),
             cwd=amonet / "modules",
             env=env,
             stderr=subprocess.STDOUT,
@@ -1007,6 +856,174 @@ def check_user() -> None:
     _die(message=NO_ACCESS + rerun())
 
 
+def child(name: str, *args: str) -> list[str]:
+    return [
+        sys.executable,
+        str(pathlib.Path(__file__).resolve()),
+        "_child",
+        name,
+        *args,
+    ]
+
+
+def child_bootrom() -> int:  # ruff: ignore[complex-structure, too-many-statements]
+    sys.path.insert(0, str(pathlib.Path.cwd()))
+    import common  # ruff: ignore[import-outside-top-level]
+    import main as amonet  # ruff: ignore[import-outside-top-level]
+    import serial  # ruff: ignore[import-outside-top-level]
+    from logger import log  # ruff: ignore[import-outside-top-level]
+    from serial.tools import list_ports  # ruff: ignore[import-outside-top-level]
+
+    marker = os.environ.get("OVERDUB_ERASED")
+    start_payload = amonet.load_payload
+
+    def emmc_read(self: common.Device, idx: int) -> bytes:
+        self.dev.write(struct.pack(">III", 0xF00DD00D, 0x1000, idx))
+        return read_flushed(self, 0x200)
+
+    def emmc_write_blocks(self: common.Device, idx: int, data: bytes) -> None:
+        self.dev.write(
+            struct.pack(">IIII", 0xF00DD00D, 0x1003, idx, len(data) // 0x200)
+        )
+        self.dev.write(data)
+        if self.dev.read(4) != b"\xd0\xd0\xd0\xd0":
+            msg = "device failure"
+            raise RuntimeError(msg)
+
+    def flash_data(
+        dev: common.Device, data: bytes, start_block: int, max_size: int = 0
+    ) -> None:
+        if marker:
+            pathlib.Path(marker).touch()
+        data += b"\0" * (-len(data) % 0x200)
+        if max_size and len(data) > max_size:
+            msg = "data too big to flash"
+            raise RuntimeError(msg)
+        for x in range(0, len(data), 64 * 0x200):
+            dev.emmc_write_blocks(start_block + x // 0x200, data[x : x + 64 * 0x200])
+
+    def read_flushed(self: common.Device, size: int) -> bytes:
+        self.dev.write(struct.pack(">IIII", 0xF00DD00D, 0x5000, 0x201000, 4))
+        data = self.dev.read(size + 4)
+        if len(data) != size + 4:
+            msg = "read fail"
+            raise RuntimeError(msg)
+        return data[:size]
+
+    def rpmb_read(self: common.Device) -> bytes:
+        self.dev.write(struct.pack(">II", 0xF00DD00D, 0x2000))
+        return read_flushed(self, 0x100)
+
+    def find_device(self: common.Device, *_: object) -> None:
+        seen = {p.device: p.pid for p in list_ports.comports() if p.vid == MEDIATEK_VID}
+        failed = {}
+        log("Waiting for bootrom")
+        while True:
+            pids = {
+                p.device: p.pid for p in list_ports.comports() if p.vid == MEDIATEK_VID
+            }
+            seen = {port: pid for port, pid in seen.items() if port in pids}
+            failed = {port: at for port, at in failed.items() if port in pids}
+            for port, pid in sorted(pids.items()):
+                if pid is None or seen.get(port) == pid:
+                    continue
+                if pid == BROM_PID:
+                    try:
+                        self.dev = serial.Serial(
+                            port, common.BAUD, timeout=common.TIMEOUT
+                        )
+                    except serial.SerialException as e:
+                        at = failed.setdefault(port, time.monotonic())
+                        if at and time.monotonic() - at >= 1:
+                            failed[port] = 0
+                            log("Cannot open " + port + ": " + str(e))
+                        continue
+                    log("Found port = " + port)
+                    return
+                seen[port] = pid
+                if pid == PRELOADER_PID:
+                    log("Ignoring the preloader on " + port)
+            time.sleep(0.25)
+
+    def load_payload(dev: common.Device, path: str) -> None:
+        start_payload(dev, path)
+        try:
+            dev.emmc_switch(0)
+            answered = dev.emmc_read(0)[510:512] == b"\x55\xaa"
+        except RuntimeError:
+            answered = False
+        if not answered:
+            log("The eMMC did not answer")
+            raise SystemExit(3)
+
+    common.Device.emmc_read = emmc_read
+    common.Device.emmc_write_blocks = emmc_write_blocks
+    common.Device.find_device = find_device
+    common.Device.rpmb_read = rpmb_read
+    amonet.flash_data = flash_data
+    amonet.load_payload = load_payload
+    amonet.main()
+    return 0
+
+
+def child_emos(action: str, want: str) -> int:
+    import serial  # ruff: ignore[import-outside-top-level]
+    from serial.tools import list_ports  # ruff: ignore[import-outside-top-level]
+
+    ports = [
+        port.device
+        for port in list_ports.comports()
+        if (port.vid, port.pid) == EMOS_USB_ID and want in {"", port.serial_number}
+    ]
+    if action == "find" or len(ports) != 1:
+        print(len(ports))
+        return int(action != "find")
+    try:
+        dev = serial.Serial(ports[0], 115200, timeout=0.2, write_timeout=1)
+    except serial.SerialException:
+        print("denied")
+        return 1
+    with dev:
+        dev.reset_input_buffer()
+        dev.write(b"\n")
+        seen = b""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            seen += dev.read(256)
+            if seen.rstrip(b" ").endswith(b"password:"):
+                print("password")
+                return 1
+            if seen.rstrip(b" ").endswith(b"#"):
+                dev.write(b"/init recovery\n")
+                print("recovery")
+                return 0
+    print("silent")
+    return 1
+
+
+def child_main(name: str, *args: str) -> int:
+    if sys.path[0] == str(pathlib.Path(__file__).resolve().parent):
+        del sys.path[0]
+    children = {"bootrom": child_bootrom, "emos": child_emos, "reset": child_reset}
+    return children[name](*args)
+
+
+def child_reset() -> int:
+    import serial  # ruff: ignore[import-outside-top-level]
+    from serial.tools import list_ports  # ruff: ignore[import-outside-top-level]
+
+    for port in list_ports.comports():
+        if port.vid == MEDIATEK_VID:
+            try:
+                with serial.Serial(
+                    port.device, 115200, timeout=1, write_timeout=1
+                ) as dev:
+                    dev.write(struct.pack(">II", 0xF00DD00D, 0x3000))
+            except serial.SerialException:
+                pass
+    return 0
+
+
 def clear_boot0() -> None:
     answer = adb_shell(command=Shell.CLEAR_BOOT0.value).split("\n")[-1].split()
     if answer == ["4096", "0"]:
@@ -1199,9 +1216,9 @@ def download(build: str) -> pathlib.Path:
 
 def emos(action: str) -> str:
     if action != "find" and ARGS.verbose:
-        show(text=f"{clock()} $ {sys.executable} -c EMOS_PY {action}")
+        show(text=f"{clock()} $ {shlex.join(child('emos', action))}")
     out = subprocess.run(
-        [sys.executable, "-c", EMOS_PY, action, USER_SERIAL or ""],
+        child("emos", action, USER_SERIAL or ""),
         capture_output=True,
         check=False,
         env=dict(os.environ, PYTHONPATH=str(fetch(PYSERIAL))),
@@ -2675,6 +2692,8 @@ def write_system(system: str) -> None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["_child"]:
+        sys.exit(child_main(*sys.argv[2:]))
     try:
         main()
     except KeyboardInterrupt:
