@@ -173,6 +173,44 @@ mountpoint -q /data
 """
 DISK = "/dev/block/mmcblk0"
 DOT_TMP = pathlib.PurePosixPath("/tmp")  # ruff: ignore[hardcoded-temp-file]
+EMOS_PY = """\
+import sys
+import time
+
+import serial
+from serial.tools import list_ports
+
+action, want = sys.argv[1:3]
+ports = [
+    port.device
+    for port in list_ports.comports()
+    if (port.vid, port.pid) == (0x1949, 0x2007)
+    and want in ("", port.serial_number)
+]
+if action == "find" or len(ports) != 1:
+    print(len(ports))
+    sys.exit()
+try:
+    dev = serial.Serial(ports[0], 115200, timeout=0.2, write_timeout=1)
+except serial.SerialException:
+    print("denied")
+    sys.exit()
+with dev:
+    dev.reset_input_buffer()
+    dev.write(b"\\n")
+    seen = b""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        seen += dev.read(256)
+        if seen.rstrip(b" ").endswith(b"password:"):
+            print("password")
+            sys.exit()
+        if seen.rstrip(b" ").endswith(b"#"):
+            dev.write(b"/init recovery\\n")
+            print("recovery")
+            sys.exit()
+print("silent")
+"""
 FASTBOOT_MODE = (
     "Unplug the USB cable, press and hold the action button (the one with a dot),"
     " plug the cable back in, and let go when the light ring turns green."
@@ -214,6 +252,7 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="d001", MODE="0660", 
 SUBSYSTEM=="usb", ATTR{idVendor}=="0bb4", ATTR{idProduct}=="0c01", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1949", ATTRS{idProduct}=="2007", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 EOF
 sudo udevadm control --reload
 sudo udevadm trigger
@@ -251,7 +290,7 @@ SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 
 
 STOCK_HELP = """Return a Dot rooted on amonet v1.1.0 or v2.0.0 to the stock Fire OS 6
-BUILD, from rooted Fire OS or from TWRP."""
+BUILD, from rooted Fire OS, from TWRP, or from EchoMuse's emOS."""
 
 
 STOCK_PARTITIONS = 16
@@ -585,6 +624,7 @@ class State(enum.Enum):
     AMONET_V2_TWRP = "amonet-v2-twrp"
     BBOE_V1_TWRP = "bboe-v1-twrp"
     BOOTED = "booted"
+    EMOS = "emos"
     NONE = "none"
     ROOTED = "rooted"
     STARTING = "starting"
@@ -1170,6 +1210,36 @@ def download(build: str) -> pathlib.Path:
     return ota
 
 
+def emos(action: str) -> str:
+    if action != "find" and ARGS.verbose:
+        show(text=f"{clock()} $ {sys.executable} -c EMOS_PY {action}")
+    out = subprocess.run(
+        [sys.executable, "-c", EMOS_PY, action, USER_SERIAL or ""],
+        capture_output=True,
+        check=False,
+        env=dict(os.environ, PYTHONPATH=str(fetch(PYSERIAL))),
+        text=True,
+        timeout=30,
+    ).stdout.strip()
+    if out.isdigit() and int(out) > 1:
+        _die(message=MORE_THAN_ONE)
+    return out
+
+
+def emos_recovery() -> None:
+    answer = emos("recovery")
+    if answer == "password":
+        _die(
+            message="emOS's console asks for a password. Type /init recovery at"
+            " the console, or clear the console password in EchoMuse's"
+            " dashboard, then run this again."
+        )
+    if answer == "denied":
+        _die(message=NO_ACCESS + rerun())
+    if answer != "recovery":
+        _die(message="emOS's serial console did not answer. Run this again.")
+
+
 def erase_by_fastboot() -> str:
     for args in (["fastboot", "erase", "boot0"], ["fastboot", "reboot"]):
         result = run(args=args, timeout=60)
@@ -1699,9 +1769,9 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
         if lk == LK.V1.value:
             return State.V1_FASTBOOT
         return State.V2_FASTBOOT
-    if not usb_serial():
-        return State.NONE
-    adb_state = run(args=["adb", "get-state"], timeout=30).stdout
+    adb_state = ""
+    if usb_serial():
+        adb_state = run(args=["adb", "get-state"], timeout=30).stdout
     if "unauthorized" in adb_state:
         return State.STOCK_BOOTED
     adb_state = adb_state.strip()
@@ -1728,7 +1798,7 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
         if booted and "uid=0" in rshell(command="su -c id", timeout=30):
             return State.ROOTED
         return State.BOOTED
-    return State.NONE
+    return State.EMOS if emos("find") == "1" else State.NONE
 
 
 def push_checked(*, local: pathlib.Path, remote: str | pathlib.PurePosixPath) -> None:
@@ -1989,6 +2059,11 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     text="This Dot appears to be unmodified. To unlock and root it,"
                     " start it in fastboot mode. " + FASTBOOT_MODE
                 )
+            elif current == State.EMOS and current not in done:
+                say(
+                    text="This Dot runs EchoMuse's emOS. Rebooting it into recovery"
+                    " through its serial console."
+                )
             elif current == State.V2_BOOTED and current not in done:
                 say(
                     text="This Dot runs rooted Fire OS 6 on amonet v2.0.0."
@@ -2042,6 +2117,11 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         elif current == State.AMONET_V2_TWRP:
             downgrade(from_twrp=True)
             done.update((State.V2_FASTBOOT, State.V1_FASTBOOT))
+        elif current == State.EMOS:
+            emos_recovery()
+            PROGRESS.begin(
+                estimate="40 s", label="waiting for recovery to start", step=2
+            )
         elif current == State.V2_BOOTED:
             run(args=["adb", "reboot", "recovery"], timeout=60)
             PROGRESS.begin(
@@ -2180,12 +2260,23 @@ def stock(build: str) -> None:  # ruff: ignore[complex-structure, too-many-branc
     work.mkdir(exist_ok=True, parents=True)
     extract(ota=download(build), work=work)
 
-    if not usb_serial():
+    adb_state = ""
+    if usb_serial():
+        adb_state = run(args=["adb", "get-state"], timeout=30).stdout.strip()
+    if adb_state not in {"device", "recovery"} and emos("find") == "1":
+        show(text="Restarting the Dot from emOS into recovery (TWRP). Waiting for it.")
+        emos_recovery()
+        try:
+            run(args=["adb", "wait-for-recovery"], timeout=300)
+        except subprocess.TimeoutExpired:
+            _die(message="the Dot did not reach recovery (TWRP) within 5 minutes")
+        usb_serial()
+        adb_state = "recovery"
+    if not adb_state:
         _die(
             message="no Dot found on USB. Connect the rooted Dot with a USB cable,"
-            " booted or in TWRP."
+            " booted, in TWRP, or on emOS."
         )
-    adb_state = run(args=["adb", "get-state"], timeout=30).stdout.strip()
     if adb_state == "device":
         show(text="Restarting the Dot into recovery (TWRP). Waiting for it to start.")
         run(args=["adb", "reboot", "recovery"], timeout=60)

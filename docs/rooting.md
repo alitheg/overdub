@@ -8,6 +8,7 @@ finds, and stops when the Dot is rooted.
 |---|---|---|
 | stock-booted | `adb get-state` says `unauthorized`, or Fire OS 6 without root | prints the fastboot gesture |
 | stock-fastboot | `unlock_status` is `false` | amonet v2.0.0 fastbrick |
+| emos | no adb or fastboot, and one serial port with USB ID `1949:2007` | `/init recovery` at emOS's serial console |
 | v2-booted | Fire OS 6, and `id` or `su -c id` answers uid 0 | `adb reboot recovery`, into v2.0.0's TWRP |
 | amonet-v2-twrp, v2-fastboot | unlocked, `lk_build_desc` is not v1's | downgrade to amonet v1.1.0 |
 | v1-fastboot | `lk_build_desc` is `f379dba-20170906_000423` | v1 TEE and TWRP 3.7.0_9-bboe1, then recovery |
@@ -59,6 +60,28 @@ finds, and stops when the Dot is rooted.
   finished.
 - With boot0 erased the bootrom resets every 30 to 40 seconds: from Linux,
   the resume went on after 30 seconds, twice, with no one touching the Dot.
+
+## A Dot on emOS
+
+- EchoMuse's emOS replaces Fire OS's boot image with its own init. It runs no
+  adbd, so adb and fastboot see nothing. Its init offers a root shell on a
+  USB serial port instead: `1949:2007`, named `EchoMuse` and `emOS`, with the
+  Dot's serial number. Measured on bryce with emOS 0.10 on amonet v2.0.0.
+- That shell's `/init recovery` reboots into the bootloader's TWRP, and the
+  port goes away within a second. From v2.0.0's TWRP, 20 s later, the root
+  goes on as from amonet-v2-twrp. `stock` takes the same path: from emOS
+  0.10 on amonet v1.1.0 with TWRP 3.7.0_9-bboe2 it restored 8146 in 3 min
+  3 s.
+- Finding the port by USB ID needs pyserial, so the probe runs a child with
+  the bootrom step's pinned wheel. It runs only when adb lists no Dot.
+- A port that will not open, as on Linux without the udev `tty` line, stops
+  the run with the rules and the commands that add them.
+- The child opens the port and sends a newline. A prompt ending in `#` gets
+  `/init recovery`. One ending in `password:` stops the run: EchoMuse's
+  dashboard sets that password, and the user types the command or clears
+  it. Nothing that matches in 5 seconds stops the run too.
+- pyserial opens a port raw. A port left to echo, as a terminal opens one,
+  feeds the shell its own output and every command returns 127.
 
 ## A Dot that shows no light
 
@@ -262,11 +285,15 @@ ring read white.
   SUBSYSTEM=="usb", ATTR{idVendor}=="0bb4", ATTR{idProduct}=="0c01", MODE="0660", GROUP="plugdev", TAG+="uaccess"
   SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", ATTR{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
   SUBSYSTEM=="tty", ATTRS{idVendor}=="0e8d", ATTRS{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+  SUBSYSTEM=="tty", ATTRS{idVendor}=="1949", ATTRS{idProduct}=="2007", MODE="0660", GROUP="plugdev", TAG+="uaccess"
   ```
 
   Then `sudo udevadm trigger`. Fire OS 5 is `1949:0112` (`mtp,adb`, set by its
   own init scripts, the same on every Dot), TWRP `18d1:d001` and
-  `18d1:4ee2`, fastboot `0bb4:0c01`, and the bootrom `0e8d:0003`.
+  `18d1:4ee2`, fastboot `0bb4:0c01`, the bootrom `0e8d:0003`, and emOS's
+  serial console `1949:2007`. The `usb` line for `1949` covers emOS's USB
+  device but not its `/dev/ttyACM*` node, which is `dialout`'s without the
+  `tty` line.
 - `uaccess` covers a user at the machine; over SSH the user must be in
   `plugdev`. A new group reaches only new processes, and a running adb server
   keeps its old permissions: with the group added and the old server up,
