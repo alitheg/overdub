@@ -38,10 +38,6 @@ from typing import IO, TYPE_CHECKING, BinaryIO, NamedTuple, NoReturn, TextIO
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-AMONET_V1 = "amonet-biscuit-v1.1.0.zip"
-AMONET_V1_SHA = "bd4d3a18b6b6e9ff6e49a4739159a81020673202795cb3959f7c9ff24351b663"
-AMONET_V2 = "amonet-biscuit-v2.0.0.zip"
-AMONET_V2_SHA = "98297293701082bc7272efe077f941c56fc7b6e1f27ef6f2e93b6e4c6fc7b62d"
 ARGS = argparse.Namespace(
     command="", dd="dd", probing=False, short=False, shown=None, verbose=False
 )
@@ -182,18 +178,12 @@ FASTBOOT_MODE = (
     "Unplug the USB cable, press and hold the action button (the one with a dot),"
     " plug the cable back in, and let go when the light ring turns green."
 )
-FIREOS = "update-kindle-csm_biscuit-272.6.8.0_user_680767620.bin"
-FIREOS_SHA = "6ababc517529938f0d1e836c3410a91df19683ae62d7fca9e2ca57320d5d2faa"
-FIREOS_URL = (
-    "https://d1s31zyz7dcc2d.cloudfront.net/47a1457e0802980eb32f63cd3ce355c0/" + FIREOS
-)
 FLUSH = "sync && echo 3 > /proc/sys/vm/drop_caches && echo flushed"
 FTVDB = "https://ftvdb.com/echo/firmware/com.amazon.biscuit.android.os/"
 GPT_HEADER_SIZE = 92
 HEAD_CHECK = 1 << 20
 IMAGES = ("preloader", "lk", "tee", "boot", "system")
 LK_DESC = re.compile(r"[0-9a-f]{7}-\d{8}_\d{6}")
-MAGISK = "Magisk-v17.3.zip"
 MAGISK_SH = """\
 set -e
 mountpoint -q /data
@@ -201,10 +191,6 @@ cd /; cpio -idu < /tmp/magisk.cpio 2>/dev/null
 chmod 700 /data/adb; chmod -R 755 /data/adb/magisk; chmod 600 /data/adb/magisk.db
 sync
 """
-MAGISK_SHA = "18e46b16b25ebe691c282fe311beccd4811cd533848a64e2efbd754fb85efde7"
-
-MAGISK_URL = "https://github.com/topjohnwu/Magisk/releases/download/v17.3/" + MAGISK
-
 MEGA = 1e6
 MINUTE = 60
 MIRROR = "https://github.com/hkfuertes/amazon_device_biscuit/releases/download/none"
@@ -212,6 +198,8 @@ MORE_THAN_ONE = (
     "more than one Dot on USB: set ANDROID_SERIAL to one's serial (adb"
     " devices lists them)"
 )
+
+
 NEW_GROUP = """this shell predates its user joining plugdev. Log in again, or run:
 
 adb kill-server
@@ -237,17 +225,7 @@ Then run it again with the new group, which a new login also has:
 
 """  # ruff: ignore[line-too-long]
 PAYLOAD_VERSION = 2
-
-
 PUSH_TRIES = 3
-PYSERIAL = "pyserial-3.5-py2.py3-none-any.whl"
-PYSERIAL_SHA = "c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0"
-PYSERIAL_URL = (
-    "https://files.pythonhosted.org/packages/07/bc/"
-    "587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/" + PYSERIAL
-)
-
-
 RESET_PY = """\
 import struct
 import serial
@@ -261,21 +239,15 @@ for port in list_ports.comports():
         except serial.SerialException:
             pass
 """
-
-
 ROOT_HELP = """Unlock and root the Dot, from stock Fire OS 6 or from any point part
 way through, and leave it on rooted Fire OS 5.5.5.4. It detects where the Dot
 is, and keeps running until the Dot is rooted: it waits while the Dot reboots,
 and while you take a step it asks for. Stopped, it picks up where it left off
 on the next run."""
-
-
 ROOT_STEPS = 9
 
 
 SHORT_WAIT = 5
-
-
 SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 
 
@@ -309,25 +281,7 @@ sync; umount $m
 """
 
 
-TWRP_SHA = "10d0b64a4398631953dc2d6821f382eaa6ac9bccff4994f54c9e849c2b781c83"
-
-
 TWRP_VERSION = "3.7.0_9-bboe1"
-
-
-TWRP = f"twrp-{TWRP_VERSION}-biscuit.img"
-
-
-LOCKS = {
-    name: threading.Lock()
-    for name in (AMONET_V1, AMONET_V2, FIREOS, MAGISK, PYSERIAL, TWRP, "v1", "v2")
-}
-
-
-TWRP_URL = (
-    "https://github.com/bboe/twrp_device_amazon_echo-mt8163/releases/download/"
-    f"v{TWRP_VERSION}/twrp-v{TWRP_VERSION}-biscuit.img"
-)
 
 
 TWRP_VERSIONS = ("3.2.", "3.7.")
@@ -435,6 +389,66 @@ BUILDS = {
         number="13222531716",
         sha256="90832e86498c5e803974c30359aea71c1129757be0ddc59d831a94b27f81487f",
     ),
+}
+
+
+class Download(NamedTuple):
+    name: str
+    sha256: str
+    url: str
+    folder: str = ""
+
+
+AMONET_V1 = Download(
+    folder="v1",
+    name="amonet-biscuit-v1.1.0.zip",
+    sha256="bd4d3a18b6b6e9ff6e49a4739159a81020673202795cb3959f7c9ff24351b663",
+    url=MIRROR + "/amonet-biscuit-v1.1.0.zip",
+)
+
+
+AMONET_V2 = Download(
+    folder="v2",
+    name="amonet-biscuit-v2.0.0.zip",
+    sha256="98297293701082bc7272efe077f941c56fc7b6e1f27ef6f2e93b6e4c6fc7b62d",
+    url=MIRROR + "/amonet-biscuit-v2.0.0.zip",
+)
+
+
+FIREOS = Download(
+    name="update-kindle-csm_biscuit-272.6.8.0_user_680767620.bin",
+    sha256="6ababc517529938f0d1e836c3410a91df19683ae62d7fca9e2ca57320d5d2faa",
+    url="https://d1s31zyz7dcc2d.cloudfront.net/47a1457e0802980eb32f63cd3ce355c0/"
+    "update-kindle-csm_biscuit-272.6.8.0_user_680767620.bin",
+)
+
+
+MAGISK = Download(
+    name="Magisk-v17.3.zip",
+    sha256="18e46b16b25ebe691c282fe311beccd4811cd533848a64e2efbd754fb85efde7",
+    url="https://github.com/topjohnwu/Magisk/releases/download/v17.3/Magisk-v17.3.zip",
+)
+
+
+PYSERIAL = Download(
+    name="pyserial-3.5-py2.py3-none-any.whl",
+    sha256="c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0",
+    url="https://files.pythonhosted.org/packages/07/bc/"
+    "587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl",
+)
+
+
+TWRP = Download(
+    name=f"twrp-{TWRP_VERSION}-biscuit.img",
+    sha256="10d0b64a4398631953dc2d6821f382eaa6ac9bccff4994f54c9e849c2b781c83",
+    url="https://github.com/bboe/twrp_device_amazon_echo-mt8163/releases/download/"
+    f"v{TWRP_VERSION}/twrp-v{TWRP_VERSION}-biscuit.img",
+)
+
+
+LOCKS = {
+    key: threading.Lock()
+    for key in (AMONET_V1, AMONET_V2, FIREOS, MAGISK, PYSERIAL, TWRP, "v1", "v2")
 }
 
 
@@ -795,12 +809,12 @@ def build_system(target: pathlib.Path) -> None:
     shutil.rmtree(part, ignore_errors=True)
     part.mkdir()
     checksum = hashlib.md5(usedforsecurity=False)
-    fireos = fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
+    fireos = fetch(FIREOS)
     with zipfile.ZipFile(fireos) as z:
         words = z.read("system.transfer.list").decode().split()
         commands = dict(zip(words[4::2], words[5::2]))
         if words[0] != "3" or set(commands) != {"erase", "new"}:
-            _die(message=f"{FIREOS} has a transfer list this does not read")
+            _die(message=f"{FIREOS.name} has a transfer list this does not read")
         blocks = int(commands["erase"].split(",")[-1])
         bounds = [int(n) for n in commands["new"].split(",")[1:]]
         ranges = [*zip(bounds[::2], bounds[1::2]), (blocks, blocks)]
@@ -972,7 +986,7 @@ def cpio_files(data: bytes) -> dict[bytes, tuple[int, bytes]]:
     at = 0
     while True:
         if data[at : at + 6] != b"070701":
-            _die(message=f"{FIREOS}'s ramdisk is not a newc cpio archive")
+            _die(message=f"{FIREOS.name}'s ramdisk is not a newc cpio archive")
         fields = [int(data[at + 6 + 8 * i : at + 14 + 8 * i], 16) for i in range(13)]
         name = data[at + 110 : at + 109 + fields[11]]
         at = (at + 110 + fields[11] + 3) & ~3
@@ -1010,10 +1024,8 @@ def digest(*, kind: str, limit: int = 0, path: pathlib.Path) -> str:
 
 
 def downgrade(*, from_twrp: bool) -> None:
-    amonet = unpack(
-        dirname="v1", name=AMONET_V1, url=MIRROR + "/" + AMONET_V1, want=AMONET_V1_SHA
-    )
-    wheel = fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA)
+    amonet = unpack(AMONET_V1)
+    wheel = fetch(PYSERIAL)
     if from_twrp:
         lk = rshell(command="getprop ro.boot.lk_build_desc", timeout=30)
     else:
@@ -1169,9 +1181,7 @@ def extract(*, ota: pathlib.Path, work: pathlib.Path) -> None:  # ruff: ignore[c
 
 
 def fastbrick() -> None:
-    amonet = unpack(
-        dirname="v2", name=AMONET_V2, url=MIRROR + "/" + AMONET_V2, want=AMONET_V2_SHA
-    )
+    amonet = unpack(AMONET_V2)
     if getvar("product") != "BISCUIT":
         _die(message="fastboot reports a product other than BISCUIT")
     lk = getvar("lk_build_desc")
@@ -1206,8 +1216,9 @@ def fastbrick() -> None:
     _die(message="the unlock did not start after 10 attempts")
 
 
-def fetch(*, name: str, url: str, want: str) -> pathlib.Path:
-    with hold(LOCKS[name]):
+def fetch(download: Download) -> pathlib.Path:
+    name, want = download.name, download.sha256
+    with hold(LOCKS[download]):
         CACHE.mkdir(exist_ok=True, parents=True)
         path = CACHE / name
         if path in VERIFIED or (
@@ -1217,7 +1228,7 @@ def fetch(*, name: str, url: str, want: str) -> pathlib.Path:
             return path
         part = CACHE / (name + ".part")
         try:
-            with urllib.request.urlopen(url, timeout=60) as response:  # ruff: ignore[multiple-with-statements]
+            with urllib.request.urlopen(download.url, timeout=60) as response:  # ruff: ignore[multiple-with-statements]
                 with part.open("wb") as out:
                     done, total = save(
                         label="downloading " + name, out=out, response=response
@@ -1325,8 +1336,8 @@ def in_fastboot() -> bool:
 
 
 def install_fireos() -> None:
-    fireos = fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
-    magisk = fetch(name=MAGISK, url=MAGISK_URL, want=MAGISK_SHA)
+    fireos = fetch(FIREOS)
+    magisk = fetch(MAGISK)
     slot = rshell(command="getprop ro.boot.slot_suffix", timeout=30)
     if slot not in {"_a", "_b"}:
         _die(message=f"TWRP reports the boot slot {slot!r}, not _a or _b")
@@ -1402,7 +1413,7 @@ def magisk_binary(magiskinit: bytes) -> bytes:
             if binary.startswith(b"\x7fELF"):
                 return binary
         at = magiskinit.find(b"\xfd7zXZ\0", at + 1)
-    _die(message=f"{MAGISK}'s magiskinit holds no magisk binary")
+    _die(message=f"{MAGISK.name}'s magiskinit holds no magisk binary")
 
 
 def magisk_db(path: pathlib.Path) -> None:
@@ -1436,7 +1447,7 @@ def magisk_files(*, db: bytes, magisk: pathlib.Path) -> dict[bytes, tuple[int, b
         script = z.read("META-INF/com/google/android/update-binary").decode()
     packed = re.search(r"^BB_ARM=(\S+)", script, re.MULTILINE)
     if not packed:
-        _die(message=f"{MAGISK} has no busybox in its installer")
+        _die(message=f"{MAGISK.name} has no busybox in its installer")
     files[b"data/adb/magisk/busybox"] = (
         0o100755,
         lzma.decompress(base64.b64decode(packed.group(1))),
@@ -1588,16 +1599,12 @@ DOWNLOADER = threading.Thread(daemon=True, target=predownload)
 def prefetch() -> None:
     if DOWNLOADER.is_alive() and threading.current_thread() is threading.main_thread():
         show(text="Finishing the downloads.")
-    unpack(
-        dirname="v2", name=AMONET_V2, url=MIRROR + "/" + AMONET_V2, want=AMONET_V2_SHA
-    )
-    unpack(
-        dirname="v1", name=AMONET_V1, url=MIRROR + "/" + AMONET_V1, want=AMONET_V1_SHA
-    )
-    fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA)
-    fetch(name=FIREOS, url=FIREOS_URL, want=FIREOS_SHA)
-    fetch(name=MAGISK, url=MAGISK_URL, want=MAGISK_SHA)
-    fetch(name=TWRP, url=TWRP_URL, want=TWRP_SHA)
+    unpack(AMONET_V2)
+    unpack(AMONET_V1)
+    fetch(PYSERIAL)
+    fetch(FIREOS)
+    fetch(MAGISK)
+    fetch(TWRP)
     threading.Thread(daemon=True, target=prebuild).start()
 
 
@@ -1700,9 +1707,9 @@ def reconnect(remote: str | pathlib.PurePosixPath) -> None:
 
 
 def replace_twrp() -> None:
-    twrp = fetch(name=TWRP, url=TWRP_URL, want=TWRP_SHA)
+    twrp = fetch(TWRP)
     PROGRESS.begin(estimate="40 s", label=f"waiting for TWRP {TWRP_VERSION}", step=4)
-    remote = DOT_TMP / TWRP
+    remote = DOT_TMP / TWRP.name
     push_checked(local=twrp, remote=remote)
     recovery = f"{BY_NAME}/recovery"
     rshell(
@@ -1874,15 +1881,10 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     " so this run finishes it.",
                 )
             bootrom(
-                amonet=unpack(
-                    dirname="v1",
-                    name=AMONET_V1,
-                    url=MIRROR + "/" + AMONET_V1,
-                    want=AMONET_V1_SHA,
-                ),
+                amonet=unpack(AMONET_V1),
                 erase=None,
                 payload=v2_payload(),
-                wheel=fetch(name=PYSERIAL, url=PYSERIAL_URL, want=PYSERIAL_SHA),
+                wheel=fetch(PYSERIAL),
             )
             v1_recovery()
             seen = None
@@ -2311,13 +2313,13 @@ def system_chunks(*, dat: IO[bytes], ranges: list[tuple[int, int]]) -> Iterator[
             n = min(1 << 20, end * 4096 - offset)
             chunk = dat.read(n)
             if len(chunk) != n:
-                _die(message=f"{FIREOS}'s system.new.dat is short")
+                _die(message=f"{FIREOS.name}'s system.new.dat is short")
             yield chunk
         at = end
 
 
 def system_image() -> tuple[pathlib.Path, str, int]:
-    target = CACHE / f"system-{FIREOS_SHA[:12]}"
+    target = CACHE / f"system-{FIREOS.sha256[:12]}"
     with hold(SYSTEM_LOCK):
         if not (target / "md5").is_file():
             shutil.rmtree(target, ignore_errors=True)
@@ -2339,12 +2341,12 @@ def unmount(*, started: bool = False) -> None:
     _die(message=message + "; nothing was written")
 
 
-def unpack(*, dirname: str, name: str, url: str, want: str) -> pathlib.Path:
-    with hold(LOCKS[dirname]):
-        archive = fetch(name=name, url=url, want=want)
-        target = CACHE / dirname
+def unpack(download: Download) -> pathlib.Path:
+    with hold(LOCKS[download.folder]):
+        archive = fetch(download)
+        target = CACHE / download.folder
         if not target.is_dir():
-            part = CACHE / (dirname + ".part")
+            part = CACHE / (download.folder + ".part")
             shutil.rmtree(part, ignore_errors=True)
             with zipfile.ZipFile(archive) as z:
                 z.extractall(part)
@@ -2377,10 +2379,8 @@ def usb_serial() -> str | None:
 
 
 def v1_recovery() -> None:
-    amonet = unpack(
-        dirname="v1", name=AMONET_V1, url=MIRROR + "/" + AMONET_V1, want=AMONET_V1_SHA
-    )
-    twrp = fetch(name=TWRP, url=TWRP_URL, want=TWRP_SHA)
+    amonet = unpack(AMONET_V1)
+    twrp = fetch(TWRP)
     PROGRESS.begin(estimate="30 s", label=f"waiting for TWRP {TWRP_VERSION}", step=4)
     run(
         args=["fastboot", "-S", "256M", "flash", "tee2", "bin/tz.img"],
@@ -2397,9 +2397,7 @@ def v1_recovery() -> None:
 
 
 def v2_payload() -> pathlib.Path:
-    amonet = unpack(
-        dirname="v2", name=AMONET_V2, url=MIRROR + "/" + AMONET_V2, want=AMONET_V2_SHA
-    )
+    amonet = unpack(AMONET_V2)
     return amonet / "brom-payload" / "build" / "payload.bin"
 
 
