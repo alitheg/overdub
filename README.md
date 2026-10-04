@@ -74,36 +74,38 @@ keep Alexa and add a Home Assistant button and some entities.
 
 ## Rooting a Dot
 
-`deploy/dot_root.py` takes a Dot from Amazon's stock Fire OS 6 to rooted Fire
-OS 5.5.5.4 with Magisk 17.3, which is what the requirements above ask for.
-With the Dot on USB:
+`deploy/dot_firmware.py root` takes a Dot from Amazon's stock Fire OS 6 to
+rooted Fire OS 5.5.5.4 with Magisk 17.3, which is what the requirements above
+ask for. With the Dot on USB:
 
 ```sh
-deploy/dot_root.py                 # rooted Fire OS 5.5.5.4, about 7 minutes
+deploy/dot_firmware.py root        # rooted Fire OS 5.5.5.4, about 7 minutes
 deploy/install.py kitchen
 ```
 
-Both scripts, filmed from start to finish, the Dot beside the terminal:
+Both directions, filmed from start to finish, the Dot beside the terminal. The
+films show the script's earlier names, `dot_root.py` and
+`dot_restore_stock.py`:
 
-<a href="https://youtu.be/yB-SI6i5EZc"><img src="https://img.youtube.com/vi/yB-SI6i5EZc/maxresdefault.jpg" alt="Video: dot_root.py takes a stock Echo Dot to rooted Fire OS 5" width="49%"></a>
-<a href="https://youtu.be/hwVIYQENaBY"><img src="https://img.youtube.com/vi/hwVIYQENaBY/maxresdefault.jpg" alt="Video: dot_restore_stock.py returns a rooted Echo Dot to stock Fire OS 6" width="49%"></a>
+<a href="https://youtu.be/yB-SI6i5EZc"><img src="https://img.youtube.com/vi/yB-SI6i5EZc/maxresdefault.jpg" alt="Video: rooting a stock Echo Dot to Fire OS 5" width="49%"></a>
+<a href="https://youtu.be/hwVIYQENaBY"><img src="https://img.youtube.com/vi/hwVIYQENaBY/maxresdefault.jpg" alt="Video: returning a rooted Echo Dot to stock Fire OS 6" width="49%"></a>
 
 - It needs Python 3.9 or later and Android platform-tools (`adb` and
-  `fastboot`). Each script is one file, so it runs without a checkout, as
+  `fastboot`). The script is one file, so it runs without a checkout, as
   below.
-- A stock Dot shows nothing on USB. `dot_root.py` asks for the fastboot gesture
-  and waits for it.
+- A stock Dot shows nothing on USB. `dot_firmware.py root` asks for the
+  fastboot gesture and waits for it.
 - The rooted Dot finishes in setup mode, with an orange ring and no Wi-Fi.
   Home Assistant reaches it only over Wi-Fi, so add it in the Alexa app. That
-  is safe once rooted: `dot_root.py` hides the updater and blocks the update
-  hosts.
+  is safe once rooted: `dot_firmware.py root` hides the updater and blocks the
+  update hosts.
 - A Dot that shows no light at all, and no fastboot after the gesture, needs
-  its eMMC test point shorted. `dot_root.py --short` waits for its bootrom,
-  says when the short may come off, and roots it.
-- `deploy/dot_restore_stock.py <build>` returns a rooted Dot to stock Fire OS
+  its eMMC test point shorted. `dot_firmware.py root --short` waits for its
+  bootrom, says when the short may come off, and roots it.
+- `deploy/dot_firmware.py stock <build>` returns a rooted Dot to stock Fire OS
   6. It erases the whole Dot, Wi-Fi and the Alexa registration included. To
   root it again, do not set it up in the Alexa app first: on Wi-Fi a stock
-  Dot can take an update to a build `dot_root.py` has not met.
+  Dot can take an update to a build `dot_firmware.py root` has not met.
 - [docs/rooting.md](docs/rooting.md) says why each step is there.
 
 ### macOS
@@ -117,18 +119,12 @@ unzip -q platform-tools-latest-darwin.zip
 export PATH="$PWD/platform-tools:$PATH"
 ```
 
-Root:
+Root the Dot, or return it to stock:
 
 ```sh
-curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_root.py
-python3 dot_root.py
-```
-
-Restore stock:
-
-```sh
-curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_restore_stock.py
-python3 dot_restore_stock.py 8146   # or 4405, 5041, 6302, 8138, 8142
+curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
+python3 dot_firmware.py root         # root it
+python3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
 ```
 
 ### Linux (Debian, Ubuntu)
@@ -141,21 +137,15 @@ sudo apt install adb fastboot curl
 
 On other distributions, or when the script reports a tool too old, use
 Google's [platform-tools](https://developer.android.com/tools/releases/platform-tools).
-Run the scripts without `sudo`. When udev does not let the user open the Dot,
+Run the script without `sudo`. When udev does not let the user open the Dot,
 the script prints the rules and the commands to add them.
 
-Root:
+Root the Dot, or return it to stock:
 
 ```sh
-curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_root.py
-python3 dot_root.py
-```
-
-Restore stock:
-
-```sh
-curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_restore_stock.py
-python3 dot_restore_stock.py 8146   # or 4405, 5041, 6302, 8138, 8142
+curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
+python3 dot_firmware.py root         # root it
+python3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
 ```
 
 ### Windows
@@ -171,18 +161,12 @@ winget install Python.Python.3.12
 The bootrom step needs MediaTek's VCOM driver (`cdc-acm.inf`, class Ports),
 installed by hand. Windows supplies every other driver.
 
-Root:
+Root the Dot, or return it to stock:
 
 ```powershell
-curl.exe -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_root.py
-py -3 dot_root.py
-```
-
-Restore stock:
-
-```powershell
-curl.exe -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_restore_stock.py
-py -3 dot_restore_stock.py 8146   # or 4405, 5041, 6302, 8138, 8142
+curl.exe -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
+py -3 dot_firmware.py root         # root it
+py -3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
 ```
 
 ## Install from a release
@@ -250,7 +234,7 @@ defends against.
   clock
 - [Things that fail silently](docs/pitfalls.md): failures that report success
 - [Deployment](docs/deployment.md): installing and removing it
-- [Rooting](docs/rooting.md): `dot_root.py` and `dot_restore_stock.py`, step
+- [Rooting](docs/rooting.md): `dot_firmware.py root` and `stock`, step
   by step
 
 ## Licence

@@ -181,9 +181,9 @@
   the default, because none of that equals building it.
 - `THIRD-PARTY.txt` is in the tarball because the licences compiled into the
   binary ask for it there. Source distribution does not need it.
-- The tarball also carries `dot_root.py` and `dot_restore_stock.py`. Nothing
-  before the release runs the tarball's copies, so CI lists the tarball and
-  checks that each of its 5 scripts is there and executable.
+- The tarball also carries `dot_firmware.py`. Nothing before the release
+  runs the tarball's copies, so CI lists the tarball and checks that each of
+  its 4 scripts is there and executable.
 - The two triggers do not overlap. A push to a fork raises no event here, so
   `pull_request` tests a contributor's work. `pull_request` never fires for a
   tag, so `push` (main and `v*` tags) cuts a release and tests the merge onto

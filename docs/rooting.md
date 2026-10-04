@@ -1,8 +1,8 @@
 # Rooting
 
-`deploy/dot_root.py` takes a Dot from stock Fire OS 6 to rooted Fire OS 5.5.5.4.
-It polls the Dot every 2 seconds, does the stage for the state it finds, and
-stops when the Dot is rooted.
+`deploy/dot_firmware.py root` takes a Dot from stock Fire OS 6 to rooted Fire
+OS 5.5.5.4. It polls the Dot every 2 seconds, does the stage for the state it
+finds, and stops when the Dot is rooted.
 
 | state | how it is recognised | what the run does |
 |---|---|---|
@@ -108,7 +108,7 @@ stops when the Dot is rooted.
 ## Recording a run
 
 - `--verbose` prints each `adb` and `fastboot` command and its exit status
-  with the time, and each state `dot_root.py` sees. The 2-second polls are not
+  with the time, and each state `root` sees. The 2-second polls are not
   printed.
 - In verbose mode, or when the output is not a terminal, a stage prints a line
   when it starts and when it ends, with no running count. Output that is not
@@ -125,6 +125,8 @@ stops when the Dot is rooted.
   `[9/9]`. A run that starts part way starts part way through the count. The
   resume after a stopped bootrom step shows both of its stages as `[3/9]`,
   the downgrade they finish.
+- `stock` numbers its steps `[ 1/16]` to `[16/16]`. A write whose target
+  already reads back the right md5 ends `skip`, in place of its seconds.
 - Each stage's estimate is an upper bound: the slowest time measured for it,
   rounded up to the next 5 seconds, over roots on macOS and Windows 11. One
   case is left out: a first run on a computer that finds the Dot already in
@@ -133,7 +135,7 @@ stops when the Dot is rooted.
   TWRP 3.7.0_9-bboe1 came in under every estimate. Its replace step took 37 s
   on bryce.
 
-The ring during `dot_restore_stock.py 6302`, from a rooted Dot not set up:
+The ring during `dot_firmware.py stock 6302`, from a rooted Dot not set up:
 
 | ring | when |
 |---|---|
@@ -147,7 +149,8 @@ The ring during `dot_restore_stock.py 6302`, from a rooted Dot not set up:
 | cyan and blue, turning | Fire OS 6 starting Alexa |
 | orange | setup mode, about 90 s after the reboot |
 
-The ring during `dot_root.py` from stock 8138, in daylight, 14 min 49 s in all:
+The ring during `dot_firmware.py root` from stock 8138, in daylight, 14 min
+49 s in all:
 
 | ring | when |
 |---|---|
@@ -177,8 +180,8 @@ ring read white.
 ## The host
 
 - Python 3.9 or later, because stock macOS's `/usr/bin/python3` is 3.9.6. CI
-  byte-compiles both scripts under 3.9's parser and runs their `--help`.
-- The standard library only, so the scripts run on stock macOS, Linux and
+  byte-compiles the script under 3.9's parser and runs its `--help`.
+- The standard library only, so the script runs on stock macOS, Linux and
   Windows. adb and fastboot are the only external tools.
 - On a terminal, `ERROR:` lines are red and warnings yellow. `NO_COLOR`,
   `TERM=dumb`, a pipe or a file turns that off. On Windows only Windows
@@ -187,11 +190,14 @@ ring read white.
 - adb must be 1.0.36 (platform-tools r24) or newer: 1.0.32 answers
   `wait-for-recovery` with `unknown host service` and passes `shell -n` to the
   device. Ubuntu 22.04 and 24.04 ship 1.0.41. fastboot must accept `-S`, as
-  every release back to r19 does. Both scripts check `adb version`, and
-  `dot_root.py` checks `fastboot --help` for `-S`. Old releases, run with no
+  every release back to r19 does. Both subcommands check `adb version`, and
+  `root` checks `fastboot --help` for `-S`. Old releases, run with no
   device, set these floors.
-- Downloads go to `$XDG_CACHE_HOME/overdub-root` (default
-  `~/.cache/overdub-root`), or `%LOCALAPPDATA%\overdub-root` on Windows. Each
+- Downloads go to `$XDG_CACHE_HOME/overdub-firmware` (default
+  `~/.cache/overdub-firmware`), or `%LOCALAPPDATA%\overdub-firmware` on
+  Windows. The script moves what the old `overdub-root` and `overdub-stock`
+  hold into it before it reads the cache, so an interrupted downgrade's
+  marker survives. A name already in the new folder stays in the old. Each
   is checked against a pinned SHA-256 before use and on every run. The amonet
   trees unpacked from the two zips are not, and neither is the system image
   built from Fire OS's.
@@ -201,7 +207,7 @@ ring read white.
   `md5` is in it, and rebuilds otherwise. If the md5 read back still fails
   after the last try, the script deletes `md5` alone, which works even when
   another process holds the image open.
-- `dot_root.py` starts the downloads in a background thread at the first probe
+- `root` starts the downloads in a background thread at the first probe
   that does not find the Dot booted, rooted or starting. So they overlap the
   wait for a Dot and for the fastboot gesture. A Dot found rooted needs no
   download.
@@ -223,12 +229,12 @@ ring read white.
   from the zip. Nothing is installed.
 - `adb get-state` reports `unauthorized` on stderr, so the script reads both
   streams.
-- Without `ANDROID_SERIAL`, both scripts use the one Dot on USB in
+- Without `ANDROID_SERIAL`, both subcommands use the one Dot on USB in
   `adb devices -l`, and ignore network adb: a rooted Dot with tcp/5555 open
   would make `adb get-state` answer `more than one device/emulator`.
-  `dot_root.py` picks again on every poll, because each reboot drops the Dot
-  off USB. With two Dots on USB the scripts stop and ask for `ANDROID_SERIAL`,
-  which fastboot follows too.
+  `root` picks again on every poll, because each reboot drops the Dot
+  off USB. With two Dots on USB both subcommands stop and ask for
+  `ANDROID_SERIAL`, which fastboot follows too.
 - An `ANDROID_SERIAL` of the form `host:port` is refused: TWRP starts no
   Wi-Fi, and fastboot and the bootrom are USB-only.
 - Windows 11's adb prints no `usb:` field, so there a line counts as USB unless
@@ -260,19 +266,20 @@ ring read white.
   keeps its old permissions: with the group added and the old server up,
   `adb devices` listed nothing. So after `adb kill-server`, `sg plugdev -c`
   runs a script with the group, without a new login.
-- Both scripts refuse to run as root: the downloads would belong to root, and
-  the rules make `sudo` needless.
+- Both subcommands refuse to run as root: the downloads would belong to root,
+  and the rules make `sudo` needless.
 - Both check at start that the process has `plugdev`, even for a desktop user
   covered by `uaccess`, so the check is one question. A user not in the group
   gets the rules and the commands to add them, starting with
   `groupadd -f plugdev` because Fedora and Arch have no such group. A user in
   `/etc/group` whose shell predates that gets `adb kill-server` and the `sg`
   line. The `sg` line repeats the command as run, interpreter, path and flags
-  included, because `./dot_root.py` is wrong from another directory.
+  included, because `./dot_firmware.py` is wrong from another directory.
 - Without the rules adb lists the Dot as `no permissions`. When that lasts 5
-  seconds and nothing else listed is usable, both scripts stop and print the
-  same rules and commands. A shorter spell is udev still setting permissions.
-  A phone the user cannot open, beside a Dot that answers, does not stop them.
+  seconds and nothing else listed is usable, both subcommands stop and print
+  the same rules and commands. A shorter spell is udev still setting
+  permissions. A phone the user cannot open, beside a Dot that answers, does
+  not stop them.
 
 ## Unlock: amonet v2.0.0
 
@@ -293,7 +300,7 @@ ring read white.
   gains nothing. In v2's fastboot it reads `getvar`, and in v2's TWRP
   `ro.boot.lk_build_desc`.
 - From v2's TWRP it clears boot0's 4 KiB header there, the way
-  `dot_restore_stock.py` does, reads it back as zeros, and runs `adb reboot`.
+  `stock` does, reads it back as zeros, and runs `adb reboot`.
   This saves the 11 s reboot into fastboot. From v2's fastboot it runs
   `fastboot erase boot0` and `fastboot reboot`. Either way the Dot drops into
   its bootrom.
@@ -350,7 +357,7 @@ ring read white.
   `__bionic_open_tzdata...` lines from `adb shell` output.
 - adb answers before MTP is on, as `18d1:d001` in this TWRP. The switch to
   `mtp,adb` puts the Dot back on USB under a new ID. In 3.2.3 the switch
-  failed a push with `failed to read copy response: EOF`. So both scripts
+  failed a push with `failed to read copy response: EOF`. So both subcommands
   wait for `mtp` in `sys.usb.config`, and each push gets 3 tries.
 - This TWRP's `adb shell` returns the exit status. So each device-side step
   is a pushed script, judged by its status. The scripts have `\n` line
@@ -416,7 +423,7 @@ ring read white.
   `skip_initramfs` becomes `want_initramfs`.
 - Magisk's installer also kept a gzipped copy of the image as it found it,
   `/data/stock_boot_<sha1>.img.gz`, and named it in `.backup/.sha1`. Only
-  Magisk Manager's image restore reads them, and `dot_restore_stock.py` is
+  Magisk Manager's image restore reads them, and `stock` is
   the way back to stock here, so neither is written.
 - The kernel is a 512-byte MTK header, a gzip stream and the dtb. Only the
   stream and the header's size field change. The ramdisk's cpio is written as
@@ -472,11 +479,11 @@ ring read white.
   run the script runs `pm hide com.amazon.device.software.ota`, then reads
   `hidden=true` back from `dumpsys package`.
 
-## Back to stock: dot_restore_stock.py
+## Back to stock: dot_firmware.py stock
 
-`deploy/dot_restore_stock.py <build>` returns a Dot on amonet v1.1.0 or v2.0.0
-to stock Fire OS 6, to test `dot_root.py` from a clean start. It follows
-`dot_root.py`'s host rules.
+`deploy/dot_firmware.py stock <build>` returns a Dot on amonet v1.1.0 or v2.0.0
+to stock Fire OS 6, to test `root` from a clean start. It follows `root`'s host
+rules.
 
 - v2.0.0's TWRP mounts by name, under `/dev/block/platform/.../by-name/`, so an
   unmount pattern anchored on `/dev/block/mmcblk0` matched nothing there and
@@ -488,9 +495,10 @@ to stock Fire OS 6, to test `dot_root.py` from a clean start. It follows
   uses `toybox dd` where it exists. TWRP 3.7.0_9-bboe1's `toybox dd`
   truncates at its `seek` offset, and the block device answers `ftruncate:
   Invalid argument`. So the one write with `seek` passes `conv=notrunc` to
-  `toybox dd`. `sgdisk`, `mke2fs`, `blockdev` and `md5sum` are looked for before
-  the countdown, because `sgdisk` and `mke2fs` are not reached until after
-  1.6 GB has gone in.
+  `toybox dd`.
+- `sgdisk`, `mke2fs`, `blockdev` and `md5sum` are looked for before the
+  countdown, because `sgdisk` and `mke2fs` are not reached until after 1.6 GB
+  has gone in.
 - 6.5.5.5 (4310M) and Fire OS 5 ship a block image (`system.new.dat`) rather
   than a `payload.bin`, which is why they are not among the builds offered.
 - FTVDB keys an OTA by its md5, so the download is found by md5 and then
@@ -567,5 +575,5 @@ to stock Fire OS 6, to test `dot_root.py` from a clean start. It follows
   that looks right pays for the full comparison, 13 s against the 80 s a write
   would take.
 - A restored Dot has no Wi-Fi until it is set up in the Alexa app. To root it
-  again, skip that setup: on Wi-Fi it can update to a build `dot_root.py` has
+  again, skip that setup: on Wi-Fi it can update to a build `root` has
   not met, or away from the build under test.

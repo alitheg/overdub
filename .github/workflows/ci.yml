@@ -137,10 +137,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.9'
-      - run: python -X oldparser -m py_compile deploy/dot_root.py
-      - run: ./deploy/dot_root.py --help
-      - run: python -X oldparser -m py_compile deploy/dot_restore_stock.py
-      - run: ./deploy/dot_restore_stock.py --help
+      - run: python -X oldparser -m py_compile deploy/dot_firmware.py
+      - run: ./deploy/dot_firmware.py --help
+      - run: ./deploy/dot_firmware.py root --help
+      - run: ./deploy/dot_firmware.py stock --help
       - run: python -X oldparser -m py_compile deploy/install.py
       - run: ./deploy/install.py --help
       - run: python -X oldparser -m py_compile deploy/uninstall.py
@@ -219,7 +219,7 @@ jobs:
           cp README.md LICENSE.txt THIRD-PARTY.txt "$dir/"
           cp -r docs "$dir/docs"
           cp deploy/install.py deploy/uninstall.py deploy/overdub.sh \
-             deploy/dot_root.py deploy/dot_restore_stock.py "$dir/deploy/"
+             deploy/dot_firmware.py "$dir/deploy/"
           cp build/overdub "$dir/build/overdub"
           cp deploy/mapdump/mapdump.jar "$dir/deploy/mapdump/"
           # Same inputs, same tarball: the mtimes, ordering and owner a tar
@@ -245,7 +245,7 @@ jobs:
       - name: The scripts travel with the binary, executable
         run: |
           listing=$(tar tvzf "overdub-$GITHUB_REF_NAME.tar.gz")
-          for f in install.py uninstall.py overdub.sh dot_root.py dot_restore_stock.py; do
+          for f in install.py uninstall.py overdub.sh dot_firmware.py; do
             awk -v p="overdub-$GITHUB_REF_NAME/deploy/$f" \
               '$1 == "-rwxr-xr-x" && $NF == p { ok = 1 } END { exit !ok }' <<<"$listing" ||
               { echo "not in the tarball, or not executable: deploy/$f"; exit 1; }
