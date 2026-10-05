@@ -102,6 +102,10 @@ films show the script's earlier names, `dot_root.py` and
 - A Dot that shows no light at all, and no fastboot after the gesture, needs
   its eMMC test point shorted. `dot_firmware.py root --short` waits for its
   bootrom, says when the short may come off, and roots it.
+- `dot_firmware.py root v1` keeps amonet v1.1.0's own TWRP 3.2.3 in
+  recovery. `dot_firmware.py root v2` follows amonet v2.0.0's own procedure
+  and leaves rooted Fire OS 6, which overdub does not run on. Run `root`
+  again with another target to move a rooted Dot to it.
 - `deploy/dot_firmware.py stock <build>` returns a rooted Dot to stock Fire OS
   6. It erases the whole Dot, Wi-Fi and the Alexa registration included. To
   root it again, do not set it up in the Alexa app first: on Wi-Fi a stock

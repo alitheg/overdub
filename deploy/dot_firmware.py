@@ -39,13 +39,18 @@ from typing import IO, TYPE_CHECKING, BinaryIO, NamedTuple, NoReturn, TextIO
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-ARGS = argparse.Namespace(command="", verbose=False)
+ARGS = argparse.Namespace(command="", target="v1-bboe", verbose=False)
 AS_ROOT = (
     "run this as your own user, not as root or with sudo: the downloads would"
     " belong to root, and on Linux udev rules let a user open the Dot"
 )
 BCB = b"\0ABB\x01\x8f\0"
 BCB_OFFSET = 0x360
+BOOT_ROOT_SHA256 = "de49cc88b27a8e77cf97cf0156bee50e4ddc0e116c41aaede06b494e38397be0"
+BOOT_ROOT_URL = (
+    "https://xdaforums.com/attachments/boot-root-zip.6388001/"
+    "?hash=51efcb2ca8973118855bf9ccae40446b"
+)
 BROM_PID = 0x0003
 BY_NAME = "/dev/block/platform/mtk-msdc.0/by-name"
 CHAIN_TEE = ("tee2", "tee1")
@@ -98,12 +103,11 @@ Then run it again with the new group, which a new login also has:
 PAYLOAD_VERSION = 2
 PRELOADER_PID = 0x2000
 PUSH_TRIES = 3
-ROOT_HELP = """Unlock and root the Dot, from stock Fire OS 6 or from any point part
-way through, and leave it on rooted Fire OS 5.5.5.4. It detects where the Dot
-is, and keeps running until the Dot is rooted: it waits while the Dot reboots,
-and while you take a step it asks for. Stopped, it picks up where it left off
-on the next run."""
-ROOT_STEPS = 9
+ROOT_HELP = """Unlock and root the Dot, from stock Fire OS 6, from any point part
+way through, or from another target, and leave it on the target: by default
+rooted Fire OS 5.5.5.4. It detects where the Dot is, and keeps running until
+the Dot is there: it waits while the Dot reboots, and while you take a step it
+asks for. Stopped, it picks up where it left off on the next run."""
 SHORT_WAIT = 5
 SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 STOCK_HELP = """Return a Dot rooted on amonet v1.1.0 or v2.0.0 to the stock Fire OS 6
@@ -120,6 +124,7 @@ UPDATE_HOSTS = (
     "amzdigital-a.akamaihd.com",
 )
 USER_SERIAL = os.environ.get("ANDROID_SERIAL")
+V2_BUILD = "8146"
 VARINT_MORE = 0x80
 WAIT = 600
 
@@ -234,7 +239,17 @@ TWRP = Download(
 )
 LOCKS = {
     key: threading.Lock()
-    for key in (AMONET_V1, AMONET_V2, FIREOS, MAGISK, PYSERIAL, TWRP, "v1", "v2")
+    for key in (
+        AMONET_V1,
+        AMONET_V2,
+        FIREOS,
+        MAGISK,
+        PYSERIAL,
+        TWRP,
+        V2_BUILD,
+        "v1",
+        "v2",
+    )
 }
 
 
@@ -300,16 +315,16 @@ class Progress:
         self.line = ""
         self.open = False
         self.step = 0
-        self.steps = ROOT_STEPS
+        self.steps = 0
         self.stopped = threading.Event()
         self.ticker = None
 
-    def begin(self, *, estimate: str = "", label: str, step: int = 0) -> None:
+    def begin(self, *, estimate: str = "", label: str) -> None:
         self.end()
-        self.step = step or self.step + 1
+        self.step += 1
         about = f"(~{estimate})" if estimate else ""
-        number = f"{self.step:>{len(str(self.steps))}}"
-        self.line = f"[{number}/{self.steps}] {label:<36} {about:<8} "
+        total = str(self.steps or "?")
+        self.line = f"[{self.step:>{len(total)}}/{total}] {label:<36} {about:<8} "
         self.ts = time.monotonic()
         self.open = True
         if ARGS.verbose or not sys.stdout.isatty():
@@ -436,20 +451,37 @@ sync; umount $m
     )
 
 
+class Stage(NamedTuple):
+    run: Callable[[], None]
+    steps: int
+    then: State | None
+    passes: frozenset[State] = frozenset()
+
+
 class State(enum.Enum):
     AMONET_V1_TWRP = "amonet-v1-twrp"
     AMONET_V2_TWRP = "amonet-v2-twrp"
+    AMONET_V2_TWRP_V1_TABLE = "amonet-v2-twrp-v1-table"
     BBOE_V1_TWRP = "bboe-v1-twrp"
     BOOTED = "booted"
     EMOS = "emos"
     NONE = "none"
     ROOTED = "rooted"
+    ROOTED_BBOE = "rooted-bboe"
+    ROOTED_V1 = "rooted-v1"
     STARTING = "starting"
     STOCK_BOOTED = "stock-booted"
     STOCK_FASTBOOT = "stock-fastboot"
+    LOCKED_V1_FASTBOOT = "locked-v1-fastboot"
     V1_FASTBOOT = "v1-fastboot"
     V2_BOOTED = "v2-booted"
     V2_FASTBOOT = "v2-fastboot"
+
+
+GOALS = {"v1": State.ROOTED_V1, "v1-bboe": State.ROOTED_BBOE, "v2": State.V2_BOOTED}
+
+
+ROOTED = {State.ROOTED, State.ROOTED_BBOE, State.ROOTED_V1}
 
 
 class Step(NamedTuple):
@@ -586,6 +618,34 @@ def boot_pack(*, header: bytes | bytearray, kernel: bytes, ramdisk: bytes) -> by
     return bytes(out)
 
 
+def boot_root() -> pathlib.Path:
+    CACHE.mkdir(exist_ok=True, parents=True)
+    path = CACHE / "boot-root.zip"
+    downloaded = pathlib.Path.home() / "Downloads" / path.name
+    asked = False
+    while not path.is_file() or digest(kind="sha256", path=path) != BOOT_ROOT_SHA256:
+        if (
+            downloaded.is_file()
+            and digest(kind="sha256", path=downloaded) == BOOT_ROOT_SHA256
+        ):
+            shutil.copyfile(downloaded, path)
+            continue
+        if not asked:
+            asked = True
+            say(
+                code=ANSIColor.YELLOW,
+                text="root v2 needs boot-root.zip, and XDA serves it only to a"
+                " browser. Download it in a browser from the address below. This"
+                f" waits until it is in {downloaded.parent} or {CACHE}, with the"
+                f" sha256 {BOOT_ROOT_SHA256}. Ctrl-C stops the script.",
+            )
+            show(text=BOOT_ROOT_URL)
+        time.sleep(2)
+    if asked:
+        passed(f"{path.name} verified")
+    return path
+
+
 def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
     *,
     amonet: pathlib.Path,
@@ -654,9 +714,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             )
             status("Waiting for the bootrom.")
         else:
-            PROGRESS.begin(
-                estimate="40 s", label="waiting for the Dot to restart", step=3
-            )
+            PROGRESS.begin(estimate="40 s", label="waiting for the Dot to restart")
         deadline = time.monotonic() + (60 if erase else 600)
         missed = unopened = 0
         while brom.poll() is None and time.monotonic() < deadline:
@@ -698,9 +756,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                 brom.stdin.write(b"\n" * 5)
                 brom.stdin.close()
         if not erase:
-            PROGRESS.begin(
-                estimate="30 s", label="finishing the downgrade to v1.1.0", step=3
-            )
+            PROGRESS.begin(estimate="30 s", label="finishing the downgrade to v1.1.0")
         try:
             brom.wait(timeout=1800)
         except subprocess.TimeoutExpired:
@@ -1164,7 +1220,7 @@ def downgrade(*, from_twrp: bool) -> None:
             message="the Dot already runs amonet v1.1.0's bootloader."
             " Run dot_firmware.py root again."
         )
-    PROGRESS.begin(estimate="45 s", label="downgrading to amonet v1.1.0", step=3)
+    PROGRESS.begin(estimate="45 s", label="downgrading to amonet v1.1.0")
     bootrom(
         amonet=amonet,
         erase=erase_from_twrp if from_twrp else erase_by_fastboot,
@@ -1181,6 +1237,8 @@ def download(build: str) -> pathlib.Path:
         CACHE
         / f"update-kindle-biscuit_puffin-{b.ns}_user_{build}_{b.number.zfill(13)}.bin"
     )
+    if ota in SESSION.verified:
+        return ota
     if not ota.is_file() or digest(kind="sha256", path=ota) != b.sha256:
         page = (
             f"{FTVDB}{b.md5}-{b.number}-fire-os-{b.ftvdb_version}-{b.ns.lower()}"
@@ -1210,7 +1268,9 @@ def download(build: str) -> pathlib.Path:
         part.replace(ota)
     if digest(kind="sha256", path=ota) != b.sha256:
         _die(message=f"{ota} does not hash to {b.sha256}")
-    passed(f"OTA {build} verified")
+    SESSION.verified.add(ota)
+    if threading.current_thread() is threading.main_thread():
+        passed(f"OTA {build} verified")
     return ota
 
 
@@ -1242,6 +1302,11 @@ def emos_recovery() -> None:
         _die(message=NO_ACCESS + rerun())
     if answer != "recovery":
         _die(message="emOS's serial console did not answer. Run this again.")
+
+
+def emos_stage() -> None:
+    emos_recovery()
+    PROGRESS.begin(estimate="40 s", label="waiting for recovery to start")
 
 
 def erase_by_fastboot() -> str:
@@ -1347,7 +1412,7 @@ def fastbrick() -> None:
     image = "bin/fastbrick.img"
     if lk == LK.V2.value:
         image = "bin/fastbrick-20221007.img"
-    PROGRESS.begin(estimate="10 s", label="unlocking with amonet v2.0.0", step=1)
+    PROGRESS.begin(estimate="10 s", label="unlocking with amonet v2.0.0")
     for attempt in range(10):
         if attempt:
             time.sleep(2)
@@ -1364,7 +1429,7 @@ def fastbrick() -> None:
             _die(message="the payload rejected this device; it was not modified")
         if started:
             PROGRESS.begin(
-                estimate="40 s", label="waiting for v2.0.0 recovery to start", step=2
+                estimate="40 s", label="waiting for v2.0.0 recovery to start"
             )
             return
     _die(message="the unlock did not start after 10 attempts")
@@ -1489,6 +1554,20 @@ def in_fastboot() -> bool:
     return bool(serials)
 
 
+def install_amonet_v2() -> None:
+    zip_path = fetch(AMONET_V2)
+    PROGRESS.begin(estimate="40 s", label="installing amonet v2.0.0")
+    remote = DOT_TMP / AMONET_V2.name
+    push_checked(local=zip_path, remote=remote)
+    out = ""
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        out = adb_shell(command=f"twrp install {remote}", timeout=120)
+    errors = [line for line in out.split("\n") if "(!)" in line]
+    if errors:
+        _die(message="amonet v2.0.0's zip failed: " + errors[0])
+    PROGRESS.begin(estimate="40 s", label="waiting for v2.0.0 recovery to start")
+
+
 def install_fireos() -> None:
     fireos = fetch(FIREOS)
     magisk = fetch(MAGISK)
@@ -1498,18 +1577,16 @@ def install_fireos() -> None:
     boot, system = f"{BY_NAME}/boot{slot}_x", f"{BY_NAME}/system{slot}"
     with tempfile.TemporaryDirectory(dir=CACHE) as tmp:
         work = pathlib.Path(tmp)
-        PROGRESS.begin(estimate="5 s", label="formatting userdata", step=5)
+        PROGRESS.begin(estimate="5 s", label="formatting userdata")
         if not adb_script(body=Shell.DATA.value, name="data.sh", work=work):
             _die(message="userdata did not format and mount")
-        PROGRESS.begin(
-            estimate="100 s", label="writing Fire OS 5.5.5.4's /system", step=6
-        )
+        PROGRESS.begin(estimate="100 s", label="writing Fire OS 5.5.5.4's /system")
         write_system(system)
         body = Shell.SYSTEM.value.format(hosts=" ".join(UPDATE_HOSTS), system=system)
         if not adb_script(body=body, name="system.sh", work=work):
             _die(message="patching /system failed")
 
-        PROGRESS.begin(estimate="5 s", label="writing the boot image", step=7)
+        PROGRESS.begin(estimate="5 s", label="writing the boot image")
         data = boot_image(fireos=fireos, magisk=magisk)
         image = work / "boot.img"
         image.write_bytes(data.ljust(-(-len(data) // 4096) * 4096, b"\0"))
@@ -1533,11 +1610,49 @@ def install_fireos() -> None:
                 f" {written or 'nothing'}, expected {want}"
             )
 
-        PROGRESS.begin(estimate="5 s", label="installing Magisk 17.3", step=8)
+        PROGRESS.begin(estimate="5 s", label="installing Magisk 17.3")
         install_magisk(magisk=magisk, work=work)
-    PROGRESS.begin(
-        estimate="4 min", label="waiting for rooted Fire OS 5 to boot", step=9
-    )
+    PROGRESS.begin(estimate="4 min", label="waiting for rooted Fire OS 5 to boot")
+    run(args=["adb", "reboot"])
+
+
+def install_fireos6() -> None:
+    ota = download(V2_BUILD)
+    zip_path = boot_root()
+    if "boot_a_x" in partition_table():
+        _die(
+            message="v2.0.0's TWRP runs on amonet v1.1.0's partition table."
+            " Run dot_firmware.py root v2 again."
+        )
+    PROGRESS.begin(estimate="10 s", label="wiping cache and data")
+    for part in ("cache", "data"):
+        adb_shell(command="twrp wipe " + part, timeout=120)
+    update = "/sdcard/update.zip"
+    for index, slot in enumerate(("first", "second")):
+        PROGRESS.begin(
+            estimate="2 min",
+            label=f"installing Fire OS 6 {V2_BUILD}, {slot} slot",
+        )
+        if index:
+            run(args=["adb", "reboot", "recovery"], check=True, timeout=60)
+            wait_for_twrp()
+        push_checked(local=ota, remote=update)
+        before = adb_shell(command="bcbtool get_active", timeout=30)
+        adb_shell(command="twrp install " + update, timeout=600)
+        after = adb_shell(command="bcbtool get_active", timeout=30)
+        if {before, after} != {"a", "b"}:
+            _die(
+                message=f"installing Fire OS 6 {V2_BUILD} left the active slot"
+                f" {after!r}, where it was {before!r}. Run dot_firmware.py root v2"
+                " again."
+            )
+    PROGRESS.begin(estimate="10 s", label="installing boot-root")
+    push_checked(local=zip_path, remote="/sdcard/boot-root.zip")
+    out = adb_shell(command="twrp install /sdcard/boot-root.zip", timeout=300)
+    errors = [line for line in out.split("\n") if "(!) Error" in line]
+    if errors:
+        _die(message="boot-root.zip failed: " + errors[0])
+    PROGRESS.begin(estimate="1 min", label="waiting for rooted Fire OS 6 to boot")
     run(args=["adb", "reboot"])
 
 
@@ -1648,6 +1763,17 @@ def main() -> None:
         help="for a Dot that shows no light and needs its test point shorted:"
         " wait for its bootrom, say when the short may come off, then root it",
     )
+    rooting.add_argument(
+        "target",
+        choices=tuple(GOALS),
+        default="v1-bboe",
+        help="v1-bboe (the default): rooted Fire OS 5.5.5.4 on amonet v1.1.0, with"
+        f" TWRP {TWRP_VERSION}. v1: the same, with v1.1.0's own TWRP 3.2.3. v2:"
+        f" amonet v2.0.0's own procedure, Fire OS 6 {V2_BUILD} with boot-root.zip's"
+        " root adb, which overdub cannot run on. Run again with another value to"
+        " move a rooted Dot to it",
+        nargs="?",
+    )
     restoring = commands.add_parser(
         "stock",
         description=STOCK_HELP,
@@ -1671,8 +1797,8 @@ def main() -> None:
     check_adb()
     move_old_caches()
     if options.command == "root":
+        ARGS.target = options.target
         SESSION.short = options.short
-        PROGRESS.steps = ROOT_STEPS
         root()
     else:
         PROGRESS.steps = STOCK_STEPS
@@ -1734,6 +1860,13 @@ def paint(*, code: ANSIColor, text: str) -> str:
     return f"\033[{code.value}m{text}\033[0m" if color(sys.stdout) else text
 
 
+def partition_table() -> str:
+    table = adb_shell(command="sgdisk --print " + DISK, timeout=30)
+    if " userdata" not in table:
+        _die(message="sgdisk did not print the Dot's partition table:\n" + table)
+    return table
+
+
 def passed(message: str) -> None:
     show(text=f"{mark()} {message}")
 
@@ -1755,6 +1888,10 @@ def prefetch() -> None:
     if DOWNLOADER.is_alive() and threading.current_thread() is threading.main_thread():
         show(text="Finishing the downloads.")
     unpack(AMONET_V2)
+    if ARGS.target == "v2":
+        with hold(LOCKS[V2_BUILD]):
+            download(V2_BUILD)
+        return
     unpack(AMONET_V1)
     fetch(PYSERIAL)
     fetch(FIREOS)
@@ -1767,6 +1904,8 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
     if in_fastboot():
         unlock = getvar("unlock_status").lower()
         if unlock == "false":
+            if getvar("lk_build_desc") == LK.V1.value:
+                return State.LOCKED_V1_FASTBOOT
             return State.STOCK_FASTBOOT
         if unlock != "true":
             return State.STARTING
@@ -1788,6 +1927,8 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
         if not version[:1].isdigit() or not LK_DESC.fullmatch(lk):
             return State.STARTING
         if lk != LK.V1.value:
+            if "boot_a_x" in adb_shell(command="sgdisk --print " + DISK, timeout=30):
+                return State.AMONET_V2_TWRP_V1_TABLE
             return State.AMONET_V2_TWRP
         if "mtp" not in adb_shell(command="getprop sys.usb.config", timeout=30):
             return State.STARTING
@@ -1803,7 +1944,7 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
                 return State.V2_BOOTED
             return State.STOCK_BOOTED
         if booted and "uid=0" in adb_shell(command="su -c id", timeout=30):
-            return State.ROOTED
+            return rooted()
         return State.BOOTED
     return State.EMOS if emos("find") == "1" else State.NONE
 
@@ -1833,6 +1974,19 @@ def push_checked(*, local: pathlib.Path, remote: str | pathlib.PurePosixPath) ->
     )
 
 
+def read_recovery(size: int) -> bytes:
+    return command(
+        args=[
+            "adb",
+            "exec-out",
+            f"su -c 'dd if={BY_NAME}/recovery bs=512 count={size // 512} 2>/dev/null'",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        timeout=60,
+    ).stdout
+
+
 def read_sectors(*, count: int, start: int) -> bytes:
     raw = command(
         args=[
@@ -1852,6 +2006,11 @@ def read_sectors(*, count: int, start: int) -> bytes:
     return raw
 
 
+def reboot_recovery(label: str) -> None:
+    run(args=["adb", "reboot", "recovery"], check=True, timeout=60)
+    PROGRESS.begin(estimate="40 s", label=label)
+
+
 def reconnect(remote: str | pathlib.PurePosixPath) -> None:
     PROGRESS.note(
         f"{remote} did not arrive; waiting for the Dot to reconnect to try again."
@@ -1863,9 +2022,22 @@ def reconnect(remote: str | pathlib.PurePosixPath) -> None:
     time.sleep(5)
 
 
+def remaining(*, start: State, table: dict[State, Stage]) -> int | None:
+    total = 0
+    for _ in range(len(table) + 1):
+        if start == GOALS[ARGS.target]:
+            return total
+        stage = table.get(start)
+        if stage is None or stage.then is None:
+            return None
+        total += stage.steps
+        start = stage.then
+    return None
+
+
 def replace_twrp() -> None:
     twrp = fetch(TWRP)
-    PROGRESS.begin(estimate="40 s", label=f"waiting for TWRP {TWRP_VERSION}", step=4)
+    PROGRESS.begin(estimate="40 s", label=f"waiting for TWRP {TWRP_VERSION}")
     remote = DOT_TMP / TWRP.name
     push_checked(local=twrp, remote=remote)
     recovery = f"{BY_NAME}/recovery"
@@ -2002,7 +2174,7 @@ def restore_failed(message: str, *, bootable: bool = False) -> NoReturn:
     _die(message=message)
 
 
-def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     usage = run(args=["fastboot", "--help"], timeout=30).stdout
     if not any(line.split()[:1] == ["-S"] for line in usage.splitlines()):
         _die(
@@ -2010,6 +2182,7 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             " Android platform-tools"
         )
     done: set[State] = set()
+    table = stages()
     guided = False
     resumed = False
     seen = None
@@ -2017,10 +2190,12 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
     deadline = None
     while True:
         current = state()
+        installed = ARGS.target == "v2" and State.AMONET_V2_TWRP in done
+        gesture = ARGS.target == "v2" and current == State.V2_FASTBOOT
         if DOWNLOADER.ident is None and current not in {
             State.BOOTED,
-            State.ROOTED,
             State.STARTING,
+            *ROOTED,
         }:
             DOWNLOADER.start()
         if current not in {State.NONE, State.STARTING}:
@@ -2028,6 +2203,8 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         if current != State.NONE:
             SESSION.short = False
         if current == State.NONE and (ERASED.exists() or SESSION.short) and not resumed:
+            if ARGS.target == "v2":
+                boot_root()
             prefetch()
             resumed = True
             done.add(State.V1_FASTBOOT)
@@ -2038,6 +2215,9 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     " v1.1.0. The Dot cannot start until the downgrade is done,"
                     " so this run finishes it.",
                 )
+            left = remaining(start=State.BBOE_V1_TWRP, table=table)
+            if left is not None:
+                PROGRESS.steps = PROGRESS.step + (2 if SESSION.short else 3) + left
             bootrom(
                 amonet=unpack(AMONET_V1),
                 erase=None,
@@ -2053,26 +2233,42 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             if ARGS.verbose and current != shown:
                 shown = current
                 show(text=f"{clock()} state: {current.value}")
-            if current not in done and current not in {
-                State.NONE,
-                State.STARTING,
-                State.BOOTED,
-            }:
+            if (
+                current not in done
+                and current not in {State.NONE, State.STARTING, State.BOOTED}
+                and not (current == State.STOCK_BOOTED and installed)
+            ):
                 PROGRESS.end()
             if current == State.BOOTED and not PROGRESS.open:
                 show(text="The Dot is starting Fire OS. Waiting for it to finish.")
+            elif current == State.STOCK_BOOTED and installed:
+                deadline = time.monotonic() + MINUTE
             elif current == State.STOCK_BOOTED:
                 guided = True
                 say(
                     text="This Dot appears to be unmodified. To unlock and root it,"
-                    " start it in fastboot mode. " + FASTBOOT_MODE
+                    " start it in fastboot mode. "
+                    + FASTBOOT_MODE
+                    + " A Dot already unlocked with amonet v2.0.0 has no fastboot:"
+                    " hold the + button instead while you plug it back in, which"
+                    " starts its TWRP."
                 )
             elif current == State.EMOS and current not in done:
                 say(
                     text="This Dot runs EchoMuse's emOS. Rebooting it into recovery"
                     " through its serial console."
                 )
-            elif current == State.V2_BOOTED and current not in done:
+            elif current == State.V2_FASTBOOT and ARGS.target == "v2":
+                say(
+                    text="This Dot is in amonet v2.0.0's fastboot. Unplug it, and"
+                    " hold the + button while you plug it back in: that starts"
+                    " v2.0.0's TWRP."
+                )
+            elif (
+                current == State.V2_BOOTED
+                and current not in done
+                and ARGS.target != "v2"
+            ):
                 say(
                     text="This Dot runs rooted Fire OS 6 on amonet v2.0.0."
                     " Rebooting it into recovery."
@@ -2087,7 +2283,16 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     + FASTBOOT_MODE
                     + " Ctrl-C stops the script."
                 )
-        if current == State.ROOTED:
+        if ARGS.target == "v2" and current == State.V2_BOOTED:
+            version = adb_shell(command="getprop ro.build.version.name")
+            warn(f"The Dot is rooted: {version}, with root adb.")
+            warn(
+                "overdub cannot run on Fire OS 6. dot_firmware.py root roots it on"
+                " Fire OS 5.5.5.4, which overdub runs on."
+            )
+            cache_note()
+            return
+        if current == GOALS[ARGS.target]:
             hide_updater()
             version = adb_shell(command="getprop ro.build.version.name")
             selinux = adb_shell(command="getenforce")
@@ -2095,16 +2300,25 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             warn("Install overdub with deploy/install.py <name>.")
             cache_note()
             return
-        if current in done or current in {
-            State.NONE,
-            State.STOCK_BOOTED,
-            State.BOOTED,
-            State.STARTING,
-        }:
-            if (
-                current not in {State.NONE, State.STOCK_BOOTED}
-                and time.monotonic() > deadline
-            ):
+        if (
+            gesture
+            or current in done
+            or current
+            in {
+                State.NONE,
+                State.STOCK_BOOTED,
+                State.BOOTED,
+                State.STARTING,
+            }
+        ):
+            waits = {State.NONE} if installed else {State.NONE, State.STOCK_BOOTED}
+            if not gesture and current not in waits and time.monotonic() > deadline:
+                if current == State.STOCK_BOOTED:
+                    _die(
+                        message="Fire OS 6 started without root adb, so"
+                        " boot-root.zip did not take. Run dot_firmware.py root v2"
+                        " again."
+                    )
                 if current == State.BOOTED:
                     _die(
                         message="Fire OS has not finished booting with root."
@@ -2117,34 +2331,34 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             time.sleep(2)
             continue
         if not done:
-            prefetch()
+            if ARGS.target == "v2":
+                boot_root()
+            if ARGS.target == "v2" or current not in ROOTED:
+                prefetch()
             warn("Keep the Dot plugged in until dot_firmware.py finishes.")
         done.add(current)
-        if current == State.STOCK_FASTBOOT:
-            fastbrick()
-        elif current == State.AMONET_V2_TWRP:
-            downgrade(from_twrp=True)
-            done.update((State.V2_FASTBOOT, State.V1_FASTBOOT))
-        elif current == State.EMOS:
-            emos_recovery()
-            PROGRESS.begin(
-                estimate="40 s", label="waiting for recovery to start", step=2
-            )
-        elif current == State.V2_BOOTED:
-            run(args=["adb", "reboot", "recovery"], timeout=60)
-            PROGRESS.begin(
-                estimate="40 s", label="waiting for v2.0.0 recovery to start", step=2
-            )
-        elif current == State.V2_FASTBOOT:
-            downgrade(from_twrp=False)
-            done.update((State.AMONET_V2_TWRP, State.V1_FASTBOOT))
-        elif current == State.V1_FASTBOOT:
-            v1_recovery()
-        elif current == State.AMONET_V1_TWRP:
-            replace_twrp()
-        elif current == State.BBOE_V1_TWRP:
-            install_fireos()
+        stage = table.get(current)
+        if stage:
+            left = remaining(start=current, table=table)
+            PROGRESS.steps = 0 if left is None else PROGRESS.step + left
+            stage.run()
+            done.update(stage.passes)
         seen = None
+
+
+def rooted() -> State:
+    images = {
+        State.ROOTED_BBOE: fetch(TWRP),
+        State.ROOTED_V1: unpack(AMONET_V1) / "bin" / "twrp.img",
+    }
+    data = read_recovery(max(image.stat().st_size for image in images.values()))
+    for found, image in images.items():
+        size = image.stat().st_size
+        if hashlib.md5(data[:size], usedforsecurity=False).hexdigest() == digest(
+            kind="md5", path=image
+        ):
+            return found
+    return State.ROOTED
 
 
 def run(
@@ -2221,6 +2435,63 @@ def since(start: float) -> str:
     if seconds < MINUTE:
         return f"{seconds}s"
     return f"{seconds // 60}m {seconds % 60:02d}s"
+
+
+def stages() -> dict[State, Stage]:
+    downgrades = frozenset({
+        State.AMONET_V2_TWRP,
+        State.AMONET_V2_TWRP_V1_TABLE,
+        State.V1_FASTBOOT,
+        State.V2_FASTBOOT,
+    })
+    table = {
+        State.EMOS: Stage(emos_stage, 1, None),
+        State.LOCKED_V1_FASTBOOT: Stage(fastbrick, 2, State.AMONET_V2_TWRP_V1_TABLE),
+        State.STOCK_FASTBOOT: Stage(fastbrick, 2, State.AMONET_V2_TWRP),
+        State.V1_FASTBOOT: Stage(v1_recovery, 1, State.BBOE_V1_TWRP),
+    }
+    if ARGS.target == "v2":
+        to_v1 = "waiting for v1.1.0 recovery"
+        return table | {
+            State.AMONET_V1_TWRP: Stage(install_amonet_v2, 2, State.AMONET_V2_TWRP),
+            State.AMONET_V2_TWRP: Stage(install_fireos6, 5, State.V2_BOOTED),
+            State.AMONET_V2_TWRP_V1_TABLE: Stage(
+                install_amonet_v2, 2, State.AMONET_V2_TWRP
+            ),
+            State.BBOE_V1_TWRP: Stage(install_amonet_v2, 2, State.AMONET_V2_TWRP),
+            State.ROOTED: Stage(
+                lambda: reboot_recovery(to_v1), 1, State.AMONET_V1_TWRP
+            ),
+            State.ROOTED_BBOE: Stage(
+                lambda: reboot_recovery(to_v1), 1, State.BBOE_V1_TWRP
+            ),
+            State.ROOTED_V1: Stage(
+                lambda: reboot_recovery(to_v1), 1, State.AMONET_V1_TWRP
+            ),
+        }
+    goal = GOALS[ARGS.target]
+    return (
+        table
+        | {
+            State.AMONET_V1_TWRP: Stage(replace_twrp, 1, State.BBOE_V1_TWRP),
+            State.AMONET_V2_TWRP: Stage(
+                lambda: downgrade(from_twrp=True), 2, State.BBOE_V1_TWRP, downgrades
+            ),
+            State.AMONET_V2_TWRP_V1_TABLE: Stage(
+                lambda: downgrade(from_twrp=True), 2, State.BBOE_V1_TWRP, downgrades
+            ),
+            State.BBOE_V1_TWRP: Stage(install_fireos, 5, State.ROOTED_BBOE),
+            State.V2_BOOTED: Stage(
+                lambda: reboot_recovery("waiting for v2.0.0 recovery to start"),
+                1,
+                State.AMONET_V2_TWRP,
+            ),
+            State.V2_FASTBOOT: Stage(
+                lambda: downgrade(from_twrp=False), 2, State.BBOE_V1_TWRP, downgrades
+            ),
+        }
+        | {rooted: Stage(swap_twrp, 1, goal) for rooted in ROOTED - {goal}}
+    )
 
 
 def state() -> State:
@@ -2474,6 +2745,25 @@ def stock_gpt(  # ruff: ignore[too-many-locals]
     return primary, backup, backup_lba - 32, parts
 
 
+def swap_twrp() -> None:
+    image, label = unpack(AMONET_V1) / "bin" / "twrp.img", "TWRP 3.2.3"
+    if ARGS.target == "v1-bboe":
+        image, label = fetch(TWRP), f"TWRP {TWRP_VERSION}"
+    PROGRESS.begin(estimate="10 s", label=f"writing {label} to recovery")
+    remote = "/data/local/tmp/recovery.img"
+    run(args=["adb", "push", image, remote], check=True, timeout=120)
+    write = Shell.WRITE.value.format(dst=f"{BY_NAME}/recovery", src=remote)
+    adb_shell(command="su -c " + shlex.quote(f"{write}; rm -f {remote}"), timeout=120)
+    size = image.stat().st_size
+    if hashlib.md5(read_recovery(size), usedforsecurity=False).hexdigest() != digest(
+        kind="md5", path=image
+    ):
+        _die(
+            message=f"{label} did not verify in recovery. Leave the Dot running"
+            " and run dot_firmware.py root again."
+        )
+
+
 def system_chunks(*, dat: IO[bytes], ranges: list[tuple[int, int]]) -> Iterator[bytes]:
     at = 0
     for start, end in ranges:
@@ -2551,7 +2841,7 @@ def usb_serial() -> str | None:
 def v1_recovery() -> None:
     amonet = unpack(AMONET_V1)
     twrp = fetch(TWRP)
-    PROGRESS.begin(estimate="30 s", label=f"waiting for TWRP {TWRP_VERSION}", step=4)
+    PROGRESS.begin(estimate="30 s", label=f"waiting for TWRP {TWRP_VERSION}")
     run(
         args=["fastboot", "-S", "256M", "flash", "tee2", "bin/tz.img"],
         check=True,
@@ -2580,6 +2870,21 @@ def varint(*, b: bytes, i: int) -> tuple[int, int]:
         s += 7
         if x < VARINT_MORE:
             return r, i
+
+
+def wait_for_twrp() -> None:
+    time.sleep(15)
+    try:
+        run(args=["adb", "wait-for-recovery"], timeout=300)
+    except subprocess.TimeoutExpired:
+        _die(message="the Dot did not reach recovery (TWRP) within 5 minutes")
+    deadline = time.monotonic() + 30
+    while not adb_shell(command="getprop ro.twrp.version", timeout=30)[
+        :1
+    ].isdigit() or "mtp" not in adb_shell(command="getprop sys.usb.config"):
+        if time.monotonic() > deadline:
+            _die(message="TWRP did not finish starting within 30 seconds")
+        time.sleep(1)
 
 
 def warn(text: str) -> None:
