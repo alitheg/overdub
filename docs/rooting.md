@@ -59,7 +59,7 @@ target.
   the erase. A run stopped inside amonet's payload leaves the Dot there, and
   the payload never restarts. So the resume first sends every MediaTek port
   the payload's reboot command, `0xf00dd00d` then `0x3000`; the Dot came back
-  as its bootrom within 5 seconds. Sent to a live bootrom on bryce, it did
+  as its bootrom within 5 seconds. Sent to a live bootrom on a Dot, it did
   no harm: the handshake that followed went through.
 - The command goes out before amonet starts. amonet records the ports at
   start and takes any port that appears later as the Dot, so a command sent
@@ -74,7 +74,7 @@ target.
   power-on: after `adb reboot` from TWRP it appeared 4 s later, stayed 40 s,
   and then showed nothing on USB for the 2.5 minutes watched. Only a replug
   opened another window.
-- So a resume started inside that window needs no replug: bryce was
+- So a resume started inside that window needs no replug: a Dot was
   replugged, and a resume started 8 s after its bootrom appeared took that
   port. The reset command had reached the bootrom first, and the handshake
   still went through. A resume started after the window closes asks for the
@@ -85,7 +85,7 @@ target.
 - EchoMuse's emOS replaces Fire OS's boot image with its own init. It runs no
   adbd, so adb and fastboot see nothing. Its init offers a root shell on a
   USB serial port instead: `1949:2007`, named `EchoMuse` and `emOS`, with the
-  Dot's serial number. Measured on bryce with emOS 0.10 on amonet v2.0.0.
+  Dot's serial number. Measured on a Dot with emOS 0.10 on amonet v2.0.0.
 - That shell's `/init recovery` reboots into the bootloader's TWRP, and the
   port goes away within a second. From v2.0.0's TWRP, 20 s later, the root
   goes on as from amonet-v2-twrp. `stock` takes the same path: from emOS
@@ -180,7 +180,7 @@ target.
   TWRP waits up to 35 s more for the system image.
 - The estimates and the rings are from TWRP 3.2.3. One root on macOS with
   TWRP 3.7.0_9-bboe1 came in under every estimate. Its replace step took 37 s
-  on bryce.
+  on a Dot.
 
 The ring during `dot_firmware.py stock 6302`, from a rooted Dot not set up:
 
@@ -224,11 +224,11 @@ The ring during `dot_firmware.py root` from stock 8138, in daylight, 14 min
 A run from stock 5041, at night, showed the same, except that the fastbrick
 ring read white.
 
-- The ring turns orange before the boot is done. On bryce, 2026-10-04, the
+- The ring turns orange before the boot is done. On a Dot, 2026-10-04, the
   setup app started and the ring turned orange 30 s before
   `BOOT_COMPLETED` went out. The first `su` came 13 s after that. The last
   step ended about a minute later, 322 s after `adb reboot`. The end is an
-  estimate from bryce's uptime, because the step logged no time. The
+  estimate from the Dot's uptime, because the step logged no time. The
   minute held Magisk's first `su`, the 2-second probes, and
   `hide_updater`'s `dumpsys package`.
 
@@ -386,7 +386,7 @@ ring read white.
   moves between the two with that one write, from Fire OS through `su`.
 - Booted Fire OS 5 has no `md5sum`. So the probe and the write read
   `recovery` back through `adb exec-out` and `su`, and hash it on the host.
-  On bryce, 13,953,024 bytes took 2.2 s. One read, at the larger image's
+  On a Dot, 13,953,024 bytes took 2.2 s. One read, at the larger image's
   length, answers for both TWRPs.
 - overdub cannot run on `v2`: Fire OS 6 on the Dot has no `app_process`,
   AudioFlinger or OpenSL ES.
@@ -428,7 +428,7 @@ ring read white.
   starts v2.0.0's TWRP, and waits for it without limit.
 - `--short` goes with any target. Its bootrom step writes amonet v1.1.0, and
   the run goes on from v1's TWRP like any other.
-- Measured on bryce, 2026-10-04, each with no one touching the Dot:
+- Measured on a Dot, 2026-10-04, each with no one touching the Dot:
 
 | from | to | took |
 |---|---|---|
@@ -493,7 +493,7 @@ ring read white.
 - bboe2 adds v1.1.0's TWRP 3.2.3 links: `/dev/block/other-boot` and
   `other-system` name the current slot's kernel and system, and `other-lk` is
   `/dev/null`. EchoMuse's installer finds the kernel through `other-boot`, and
-  stopped on bboe1 without it. Measured on bryce: `other-boot` was
+  stopped on bboe1 without it. Measured on a Dot: `other-boot` was
   `mmcblk0p10` and `other-system` `mmcblk0p13`, and both followed a slot
   change.
 - v1.1.0's TWRP 3.2.3 moved 5.1 MB/s over adb, and 7.0 MB/s with cpu0 at
@@ -557,7 +557,7 @@ ring read white.
 - This TWRP's `exec-in` drops unread input: 1 MiB arrived as 890,197 bytes.
   Its `adb shell` carried 100 MB intact from macOS. This TWRP's `adb shell`
   returns when `dd` ends, with `dd`'s status. Windows is untried.
-- On bryce the gzip reaches `cat > /dev/null` in 17.5 s. Through `gunzip`,
+- On a Dot the gzip reaches `cat > /dev/null` in 17.5 s. Through `gunzip`,
   with the output discarded, it takes 36.4 to 39.3 s. So `gunzip` on the Dot
   is the limit. The whole stage, with the eMMC and the md5 read-back, took
   80 s. With TWRP 3.2.3 it took about 77 s.
@@ -588,7 +588,7 @@ ring read white.
   magiskboot writes one: sorted, inodes from 300000, every mtime 0.
 - The stock image ends in a 2,048-byte signature. It is dropped, as magiskboot
   dropped it: the unlocked LK does not check it.
-- Compared with the image that `twrp install` of Magisk wrote on bryce, every
+- Compared with the image that `twrp install` of Magisk wrote on a Dot, every
   header field, the kernel, the dtb and every ramdisk file are the same, except
   in 3 places. There is no `.backup/.sha1`. 3 symlinks keep their stock modes,
   where busybox's `cpio` had made them 0777. The MTK header keeps the stock 0xff padding, where
@@ -619,7 +619,7 @@ ring read white.
 - It also gets `magisk`, which `boot_patch.sh` wrote with
   `magiskinit -x magisk`, and which module installs and `--unlock-blocks` run.
   It is the xz stream in `magiskinit` that unpacks to an ELF. Unpacked on the
-  host and by `magiskinit -x` on bryce, its md5 is the same. `/sbin/magisk.bin`
+  host and by `magiskinit -x` on a Dot, its md5 is the same. `/sbin/magisk.bin`
   differs from it in 62 bytes, which magiskinit randomizes at boot.
 - On a new userdata the installer wrote to `/data/magisk`, because
   `/data/adb` did not exist yet. Magisk's daemon moved it to `/data/adb/magisk`
@@ -662,7 +662,7 @@ any TWRP the restore runs.
   TWRP, and the Dot showed up only as its bootrom.
 - A resume clears the TWRP states from the run's acted-on set, so a run
   that started in TWRP acts on TWRP again after the bootrom step.
-- Measured on bryce, 2026-10-04: a restore stopped during the system write,
+- Measured on a Dot, 2026-10-04: a restore stopped during the system write,
   then `adb reboot` from TWRP, then a rerun about 20 s later. The bootrom's
   one window was open when the rerun's bootrom step started, and amonet then
   skipped ports already present. The window closed, and nothing showed on
@@ -688,7 +688,7 @@ any TWRP the restore runs.
   truncates at its `seek` offset, and the block device answers `ftruncate:
   Invalid argument`. So the one write with `seek` passes `conv=notrunc` to
   `toybox dd`.
-- Measured on bryce, 2026-10-04, before `stock` was a target: `stock 8146`
+- Measured on a Dot, 2026-10-04, before `stock` was a target: `stock 8146`
   from rooted-v1, through v1.1.0's TWRP 3.2.3, in 6 min 9 s; from
   v2-booted, through v2.0.0's TWRP, in 2 min 59 s; from rooted-bboe in
   1 min 52 s. Each was rooted again after the fastboot gesture: to `v2` in
@@ -740,7 +740,7 @@ any TWRP the restore runs.
   success 1`, and slot b is unused. Each slot byte packs `priority:4`,
   `tries:3` and `success:1`, low bits first.
 - A zeroed `misc` is not safe. Stock's first boot starts slot a with a few
-  tries and `success 0`, and each boot cut short spends one. On bryce, a
+  tries and `success 0`, and each boot cut short spends one. On a Dot, a
   gesture during the first boot and the power-ons after it left slot a at
   `tries 0 success 0`. The preloader then reset about every 30 s with the ring
   dark, never starting LK, so neither the gesture nor `FACTFACT` reached

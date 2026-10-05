@@ -105,7 +105,8 @@ films show the script's earlier names, `dot_root.py` and
 - `dot_firmware.py v1` keeps amonet v1.1.0's own TWRP 3.2.3 in recovery.
   `dot_firmware.py v2` follows amonet v2.0.0's own procedure and leaves
   rooted Fire OS 6, which overdub does not run on. Run it again with another
-  target to move the Dot to it.
+  target to move the Dot to it: [docs/switching.md](docs/switching.md) shows
+  each move.
 - `dot_firmware.py stock <build>` returns the Dot to stock Fire OS 6. It
   erases the whole Dot, Wi-Fi and the Alexa registration included. To root it
   again, do not set it up in the Alexa app first: on Wi-Fi a stock Dot can
@@ -240,6 +241,8 @@ defends against.
 - [Deployment](docs/deployment.md): installing and removing it
 - [Rooting](docs/rooting.md): `dot_firmware.py`, each target step by
   step
+- [Switching root versions](docs/switching.md): moving a rooted Dot between
+  targets, with sample output
 
 ## Licence
 
