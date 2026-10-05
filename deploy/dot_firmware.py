@@ -320,7 +320,7 @@ class Progress:
         self.step += 1
         about = f"(~{estimate})" if estimate else ""
         total = str(self.steps or "?")
-        self.line = f"[{self.step:>{len(total)}}/{total}] {label:<36} {about:<8} "
+        self.line = f"[{self.step:>{len(total)}}/{total}] {label:<38} {about:<8} "
         self.ts = time.monotonic()
         self.open = True
         if ARGS.verbose or not sys.stdout.isatty():
@@ -1234,7 +1234,7 @@ def downgrade(*, from_twrp: bool) -> None:
         )
     if lk == LK.V1.value:
         _die(message="the Dot already runs amonet v1.1.0's bootloader. " + again())
-    PROGRESS.begin(estimate="45 s", label="downgrading to amonet v1.1.0")
+    PROGRESS.begin(estimate="45 s", label="writing amonet v1.1.0's bootloader")
     bootrom(
         amonet=amonet,
         erase=erase_from_twrp if from_twrp else erase_by_fastboot,
@@ -2607,8 +2607,8 @@ def stages() -> dict[State, Stage]:
         State.STOCK_FASTBOOT: Stage(fastbrick, 2, State.AMONET_V2_TWRP),
         State.V1_FASTBOOT: Stage(v1_recovery, 1, State.BBOE_V1_TWRP),
     }
+    to_twrp = "waiting for recovery"
     if ARGS.target == "stock":
-        to_twrp = "waiting for recovery"
         return (
             table
             | {
@@ -2634,7 +2634,6 @@ def stages() -> dict[State, Stage]:
             }
         )
     if ARGS.target == "v2":
-        to_v1 = "waiting for v1.1.0 recovery"
         return table | {
             State.AMONET_V1_TWRP: Stage(install_amonet_v2, 2, State.AMONET_V2_TWRP),
             State.AMONET_V2_TWRP: Stage(install_fireos6, 5, State.V2_BOOTED),
@@ -2643,13 +2642,13 @@ def stages() -> dict[State, Stage]:
             ),
             State.BBOE_V1_TWRP: Stage(install_amonet_v2, 2, State.AMONET_V2_TWRP),
             State.ROOTED: Stage(
-                lambda: reboot_recovery(to_v1), 1, State.AMONET_V1_TWRP
+                lambda: reboot_recovery(to_twrp), 1, State.AMONET_V1_TWRP
             ),
             State.ROOTED_BBOE: Stage(
-                lambda: reboot_recovery(to_v1), 1, State.BBOE_V1_TWRP
+                lambda: reboot_recovery(to_twrp), 1, State.BBOE_V1_TWRP
             ),
             State.ROOTED_V1: Stage(
-                lambda: reboot_recovery(to_v1), 1, State.AMONET_V1_TWRP
+                lambda: reboot_recovery(to_twrp), 1, State.AMONET_V1_TWRP
             ),
         }
     goal = GOALS[ARGS.target]
