@@ -159,8 +159,9 @@ target.
   with the time, and each state the run sees. The 2-second polls are not
   printed.
 - In verbose mode, or when the output is not a terminal, a stage prints a line
-  when it starts and when it ends, with no running count. Output that is not
-  a terminal also gets no download meter. Either would fill a log with `\r`
+  when it starts and when it ends, with no running count. In verbose mode
+  both lines start with the time. Output that is not a terminal also gets
+  no download meter. Either would fill a log with `\r`
   frames.
 - A running stage shows a Braille spinner where its mark will go, and a
   finished stage prints ✅. Where the output's encoding cannot represent them,
@@ -217,11 +218,19 @@ The ring during `dot_firmware.py root` from stock 8138, in daylight, 14 min
 | cyan, whole ring, steady | the boot image, /system and Magisk |
 | off, about 6 s | the first reboot into Fire OS 5 |
 | deep blue, about 35 s | Fire OS 5 booting |
-| cyan and blue, turning, about 3 min | the first boot, until `sys.boot_completed` |
-| orange | setup mode, as the script finishes |
+| cyan and blue, turning, about 3 min | the first boot, until the setup app starts |
+| orange | setup mode, about 1.5 minutes before the script finishes |
 
 A run from stock 5041, at night, showed the same, except that the fastbrick
 ring read white.
+
+- The ring turns orange before the boot is done. On bryce, 2026-10-04, the
+  setup app started and the ring turned orange 30 s before
+  `BOOT_COMPLETED` went out. The first `su` came 13 s after that. The last
+  step ended about a minute later, 322 s after `adb reboot`. The end is an
+  estimate from bryce's uptime, because the step logged no time. The
+  minute held Magisk's first `su`, the 2-second probes, and
+  `hide_updater`'s `dumpsys package`.
 
 ## The host
 

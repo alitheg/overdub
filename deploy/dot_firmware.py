@@ -323,7 +323,9 @@ class Progress:
         self.line = f"[{self.step:>{len(total)}}/{total}] {label:<38} {about:<8} "
         self.ts = time.monotonic()
         self.open = True
-        if ARGS.verbose or not sys.stdout.isatty():
+        if ARGS.verbose:
+            show(text=f"{clock()} {self.line.rstrip()}")
+        elif not sys.stdout.isatty():
             show(text=self.line.rstrip())
         else:
             self.start()
@@ -335,7 +337,8 @@ class Progress:
         back = "\r" if self.halt() else ""
         took = "skip" if skipped else self.seconds()
         total = f"({since(self.t0)} total)"
-        show(text=f"{back}{self.line}{mark()} {took} {total:>15}")
+        stamp = f"{clock()} " if ARGS.verbose else ""
+        show(text=f"{back}{stamp}{self.line}{mark()} {took} {total:>15}")
 
     def halt(self) -> bool:
         if not self.ticker:
