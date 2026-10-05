@@ -433,8 +433,36 @@ ring read white.
 - From amonet v1.1.0 the run installs amonet v2.0.0's zip from either v1
   TWRP, the XDA route from v1. The zip restores the stock partition table
   and writes the preloader, LK, TZ, payload and TWRP, then reboots into
-  v2.0.0's TWRP. An interrupted write there can leave the Dot needing the
-  bootrom. A rooted Dot first goes to recovery.
+  v2.0.0's TWRP. A rooted Dot first goes to recovery.
+- The zip writes the preloader first. A stop after that left a valid
+  preloader in front of a mixed LK and TEE: no bootrom, and maybe no LK,
+  so only the eMMC short reached it. So the run installs a copy whose
+  installer writes the preloader last, after the `misc` wipe, and clears
+  boot0's header before the install, with `boot0-erased`, as the restore
+  does. A stop before the preloader then lands in the bootrom, and the
+  resume writes amonet v1.1.0 and installs the zip again. Every other file
+  in the copy is the pinned zip's. The copy is rebuilt on every run, in
+  about 2 s, so a change to the edit cannot leave an old copy installed.
+- The marker goes when the zip prints `- Done`, which it does after the
+  preloader. Before that, the zip's own reboot read as a Dot with nothing on
+  USB and the marker set, and the run started a resume for a Dot that was
+  booting. The check comes before the zip's `(!)` lines, some of which it
+  prints and goes on past.
+- A TWRP that does not pass the zip's output on would still leave the
+  marker, and TWRP 3.2.3 was not tried here. So a resume without an erase or `--short`
+  that sees the preloader, `0e8d:2000`, takes boot0 as intact: it stops the
+  bootrom step, deletes the marker, and goes on polling. On a Dot rebooted
+  from Fire OS 6 with the marker set by hand, the run said so 2 s later and
+  ended at v2-booted, with nothing written.
+- Measured on a Dot: TWRP 3.7.0_9-bboe2 installs the copy in 19 s, as it
+  did the pinned zip, and the Dot came up in v2.0.0's TWRP with no resume.
+- Cut on a Dot: a reboot from the Dot itself when the zip logged
+  `Updating tz`, after LK and before the preloader. The bootrom appeared 4 s
+  later, the same run's resume took it with no one touching the Dot, wrote
+  amonet v1.1.0, installed the zip again from bboe2, and went on to v2:
+  `[1/8]` to `[13/13]`, 6 min 43 s in all.
+  This TWRP has no `/proc/sysrq-trigger` and its `reboot` takes no `-f`, so
+  the cut was a plain `reboot`.
 - The zip checks `ro.build.product` in `/default.prop` and needs `/sbin/sh`
   and `sgdisk`. Both v1 TWRPs say `biscuit` and ship both.
 - A v1 Dot started in fastboot reads as locked-v1-fastboot, and the

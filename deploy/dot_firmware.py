@@ -667,7 +667,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
     erase: Callable[[], str] | None,
     payload: pathlib.Path,
     wheel: pathlib.Path,
-) -> None:
+) -> bool:
     shutil.copyfile(payload, amonet / "brom-payload" / "build" / "payload.bin")
     log_path = CACHE / "bootrom.log"
     env = dict(os.environ, PYTHONPATH=str(wheel), PYTHONUNBUFFERED="1")
@@ -737,6 +737,14 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
             text = log_path.read_text(errors="replace")
             if "Found port" in text:
                 break
+            if not erase and not SESSION.short and "Ignoring the preloader" in text:
+                brom.kill()
+                ERASED.unlink(missing_ok=True)
+                PROGRESS.note(
+                    "The Dot started its preloader, so boot0 is intact and it"
+                    " needs no bootrom step."
+                )
+                return False
             if SESSION.short and text.count("Ignoring the preloader") > missed:
                 missed = text.count("Ignoring the preloader")
                 if sys.stdout.isatty():
@@ -819,6 +827,7 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
         time.sleep(2)
     else:
         _die(message="the Dot did not come back in v1.1.0's fastboot")
+    return True
 
 
 def build_system(target: pathlib.Path) -> None:
@@ -1620,13 +1629,24 @@ def in_fastboot() -> bool:
 
 
 def install_amonet_v2() -> None:
-    zip_path = fetch(AMONET_V2)
+    zip_path = preloader_last()
     PROGRESS.begin(estimate="40 s", label="installing amonet v2.0.0")
     remote = DOT_TMP / AMONET_V2.name
     push_checked(local=zip_path, remote=remote)
+    ERASED.touch()
+    answer = adb_shell(command=Shell.CLEAR_BOOT0.value, timeout=60).split()
+    if answer[-2:] != ["4096", "0"]:
+        if answer[-2:-1] == ["4096"]:
+            ERASED.unlink(missing_ok=True)
+        _die(
+            message="boot0's header did not read back as cleared, so amonet"
+            " v2.0.0's zip was not installed. " + again()
+        )
     out = ""
     with contextlib.suppress(subprocess.TimeoutExpired):
         out = adb_shell(command=f"twrp install {remote}", timeout=120)
+    if "- Done" in out:
+        ERASED.unlink(missing_ok=True)
     errors = [line for line in out.split("\n") if "(!)" in line]
     if errors:
         _die(message="amonet v2.0.0's zip failed: " + errors[0])
@@ -1949,6 +1969,28 @@ def prefetch() -> None:
     fetch(MAGISK)
     fetch(TWRP)
     threading.Thread(daemon=True, target=prebuild).start()
+
+
+def preloader_last() -> pathlib.Path:
+    patched = CACHE / ("preloader-last-" + AMONET_V2.name)
+    source = fetch(AMONET_V2)
+    script = "META-INF/com/google/android/update-binary"
+    anchor = "set_progress 1.00\n"
+    with zipfile.ZipFile(source) as src:
+        text = src.read(script).decode()
+        start = text.find('ui_print "- Updating preloader"')
+        end = text.find('ui_print "- Updating lk"')
+        if not 0 < start < end or text.count(anchor) != 1:
+            _die(message=f"{AMONET_V2.name}'s installer is not the one expected")
+        rest = text[:start] + text[end:]
+        moved = rest.replace(anchor, anchor + "\n" + text[start:end])
+        part = patched.with_suffix(".part")
+        with zipfile.ZipFile(part, "w") as dst:
+            for info in src.infolist():
+                data = moved.encode() if info.filename == script else src.read(info)
+                dst.writestr(info, data)
+    part.replace(patched)
+    return patched
 
 
 def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-statements, too-many-branches]
@@ -2403,13 +2445,16 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             left = remaining(start=State.BBOE_V1_TWRP, table=table)
             if left is not None:
                 PROGRESS.steps = PROGRESS.step + (2 if SESSION.short else 3) + left
-            bootrom(
+            if bootrom(
                 amonet=unpack(AMONET_V1),
                 erase=None,
                 payload=v2_payload(),
                 wheel=fetch(PYSERIAL),
-            )
-            v1_recovery()
+            ):
+                v1_recovery()
+            else:
+                done.discard(State.V1_FASTBOOT)
+                resumed = False
             seen = None
             continue
         if current != seen:
@@ -2458,9 +2503,9 @@ def root() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                     text="This Dot runs rooted Fire OS 6 on amonet v2.0.0."
                     " Rebooting it into recovery."
                 )
-            elif current == State.NONE and not done and guided:
+            elif current == State.NONE and not done and not PROGRESS.open and guided:
                 show(text="Waiting for the Dot in fastboot mode, with a green ring.")
-            elif current == State.NONE and not done:
+            elif current == State.NONE and not done and not PROGRESS.open:
                 guided = True
                 say(
                     text="Waiting for a Dot on USB. Connect it with a USB cable."
