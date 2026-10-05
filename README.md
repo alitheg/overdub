@@ -241,8 +241,8 @@ defends against.
 - [Deployment](docs/deployment.md): installing and removing it
 - [Rooting](docs/rooting.md): `dot_firmware.py`, each target step by
   step
-- [Switching root versions](docs/switching.md): moving a rooted Dot between
-  targets, with sample output
+- [Switching root versions](docs/switching.md): getting the script, moving a
+  rooted Dot between targets with sample output, and `--short`
 
 ## Licence
 

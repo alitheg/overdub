@@ -1,6 +1,33 @@
 # Switching root versions
 
-`deploy/dot_firmware.py` takes one optional target. Run it again with another
+## Getting the script
+
+`dot_firmware.py` is one file. Download it from
+<https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py>
+into the current directory:
+
+```sh
+curl -L -o dot_firmware.py https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
+```
+
+```sh
+wget -O dot_firmware.py https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
+```
+
+In Windows PowerShell:
+
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py -OutFile dot_firmware.py
+```
+
+Run it with `python3 dot_firmware.py` on macOS and Linux, and with
+`py -3 dot_firmware.py` on Windows. It needs Python 3.9 or later, and `adb`
+and `fastboot` from Android platform-tools; the README has the install steps
+for each system.
+
+## Targets
+
+`dot_firmware.py` takes one optional target. Run it again with another
 target to move a Dot to it. The run finds where the Dot is and does only the
 steps that are left.
 
@@ -22,7 +49,7 @@ steps that are left.
 Only the TWRP in recovery changes, so this takes about 10 seconds.
 
 ```console
-$ deploy/dot_firmware.py v1
+$ python3 dot_firmware.py v1
 Keep the Dot plugged in until dot_firmware.py finishes.
 [1/1] writing TWRP 3.2.3 to recovery         (~10 s)  ✅   7s      (7s total)
 The Dot is rooted: Fire OS 5.5.5.4 (680767620), SELinux Permissive,
@@ -31,7 +58,7 @@ Install overdub with deploy/install.py <name>.
 ```
 
 ```console
-$ deploy/dot_firmware.py
+$ python3 dot_firmware.py
 Keep the Dot plugged in until dot_firmware.py finishes.
 [1/1] writing TWRP 3.7.0_9-bboe2 to recovery (~10 s)  ✅   7s      (7s total)
 The Dot is rooted: Fire OS 5.5.5.4 (680767620), SELinux Permissive,
@@ -46,7 +73,7 @@ twice, once to each slot. This takes about 5 minutes. The run also needs
 `boot-root.zip` from the XDA thread, and waits for it in `~/Downloads`.
 
 ```console
-$ deploy/dot_firmware.py v2
+$ python3 dot_firmware.py v2
 ✅ OTA 8146 verified
 Keep the Dot plugged in until dot_firmware.py finishes.
 [1/8] waiting for recovery                   (~40 s)  ✅  30s     (30s total)
@@ -70,7 +97,7 @@ it Fire OS 5's first boot. `v1` adds one step at the end, which writes TWRP
 3.2.3 to recovery.
 
 ```console
-$ deploy/dot_firmware.py
+$ python3 dot_firmware.py
 This Dot runs rooted Fire OS 6 on amonet v2.0.0. Rebooting it into recovery.
 Keep the Dot plugged in until dot_firmware.py finishes.
 [1/8] waiting for v2.0.0 recovery to start   (~40 s)  ✅  19s     (19s total)
@@ -88,8 +115,30 @@ Install overdub with deploy/install.py <name>.
 
 ## To and from stock
 
-- `deploy/dot_firmware.py stock 8146` restores stock from any target, in 17
-  steps from v1-bboe. It erases the whole Dot.
+- `dot_firmware.py stock 8146` restores stock from any target, in 17 steps
+  from v1-bboe. It erases the whole Dot.
 - From stock, any target starts again with the fastboot gesture.
   [docs/rooting.md](rooting.md#back-to-stock-the-stock-target) has the
   details.
+
+## A Dot that shows no light: `--short`
+
+Use `--short` only for a Dot that shows no light and gives no fastboot after
+the gesture. Its eMMC test point must be shorted to reach the bootrom.
+`--short` goes with any target:
+
+```sh
+python3 dot_firmware.py --short          # to v1-bboe
+python3 dot_firmware.py --short v1
+```
+
+1. Start the run with the Dot unplugged. It asks: "Short the Dot's test
+   point and plug it in."
+2. Hold the short and plug the Dot in. If the Dot starts normally, the run
+   prints "Short 1 missed". Unplug, short, and plug it in again.
+3. When the run prints "The bootrom answered. The short may come off now",
+   take the short off. The run waits 5 seconds, then goes on.
+
+The bootrom step writes amonet v1.1.0, and the run continues from its TWRP as
+for any other Dot. `--short` to `v2` was never run on hardware.
+[docs/rooting.md](rooting.md#a-dot-that-shows-no-light) has the details.
