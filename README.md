@@ -74,12 +74,12 @@ keep Alexa and add a Home Assistant button and some entities.
 
 ## Rooting a Dot
 
-`deploy/dot_firmware.py root` takes a Dot from Amazon's stock Fire OS 6 to
-rooted Fire OS 5.5.5.4 with Magisk 17.3, which is what the requirements above
-ask for. With the Dot on USB:
+`deploy/dot_firmware.py` takes a Dot from Amazon's stock Fire OS 6 to rooted
+Fire OS 5.5.5.4 with Magisk 17.3, which is what the requirements above ask for.
+With the Dot on USB:
 
 ```sh
-deploy/dot_firmware.py root        # rooted Fire OS 5.5.5.4, about 7 minutes
+deploy/dot_firmware.py             # rooted Fire OS 5.5.5.4, about 7 minutes
 deploy/install.py kitchen
 ```
 
@@ -93,23 +93,23 @@ films show the script's earlier names, `dot_root.py` and
 - It needs Python 3.9 or later and Android platform-tools (`adb` and
   `fastboot`). The script is one file, so it runs without a checkout, as
   below.
-- A stock Dot shows nothing on USB. `dot_firmware.py root` asks for the
-  fastboot gesture and waits for it.
+- A stock Dot shows nothing on USB. `dot_firmware.py` asks for the fastboot
+  gesture and waits for it.
 - The rooted Dot finishes in setup mode, with an orange ring and no Wi-Fi.
   Home Assistant reaches it only over Wi-Fi, so add it in the Alexa app. That
-  is safe once rooted: `dot_firmware.py root` hides the updater and blocks the
+  is safe once rooted: `dot_firmware.py` hides the updater and blocks the
   update hosts.
 - A Dot that shows no light at all, and no fastboot after the gesture, needs
-  its eMMC test point shorted. `dot_firmware.py root --short` waits for its
-  bootrom, says when the short may come off, and roots it.
-- `dot_firmware.py root v1` keeps amonet v1.1.0's own TWRP 3.2.3 in
-  recovery. `dot_firmware.py root v2` follows amonet v2.0.0's own procedure
-  and leaves rooted Fire OS 6, which overdub does not run on. Run `root`
-  again with another target to move a rooted Dot to it.
-- `deploy/dot_firmware.py stock <build>` returns a rooted Dot to stock Fire OS
-  6. It erases the whole Dot, Wi-Fi and the Alexa registration included. To
-  root it again, do not set it up in the Alexa app first: on Wi-Fi a stock
-  Dot can take an update to a build `dot_firmware.py root` has not met.
+  its eMMC test point shorted. `dot_firmware.py --short` waits for its
+  bootrom, says when the short may come off, and goes on.
+- `dot_firmware.py v1` keeps amonet v1.1.0's own TWRP 3.2.3 in recovery.
+  `dot_firmware.py v2` follows amonet v2.0.0's own procedure and leaves
+  rooted Fire OS 6, which overdub does not run on. Run it again with another
+  target to move the Dot to it.
+- `dot_firmware.py stock <build>` returns the Dot to stock Fire OS 6. It
+  erases the whole Dot, Wi-Fi and the Alexa registration included. To root it
+  again, do not set it up in the Alexa app first: on Wi-Fi a stock Dot can
+  take an update to a build `dot_firmware.py` has not met.
 - [docs/rooting.md](docs/rooting.md) says why each step is there.
 
 ### macOS
@@ -127,7 +127,7 @@ Root the Dot, or return it to stock:
 
 ```sh
 curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
-python3 dot_firmware.py root         # root it
+python3 dot_firmware.py              # root it
 python3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
 ```
 
@@ -148,7 +148,7 @@ Root the Dot, or return it to stock:
 
 ```sh
 curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
-python3 dot_firmware.py root         # root it
+python3 dot_firmware.py              # root it
 python3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
 ```
 
@@ -169,7 +169,7 @@ Root the Dot, or return it to stock:
 
 ```powershell
 curl.exe -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
-py -3 dot_firmware.py root         # root it
+py -3 dot_firmware.py              # root it
 py -3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
 ```
 
@@ -238,8 +238,8 @@ defends against.
   clock
 - [Things that fail silently](docs/pitfalls.md): failures that report success
 - [Deployment](docs/deployment.md): installing and removing it
-- [Rooting](docs/rooting.md): `dot_firmware.py root` and `stock`, step
-  by step
+- [Rooting](docs/rooting.md): `dot_firmware.py`, each target step by
+  step
 
 ## Licence
 

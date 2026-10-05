@@ -139,8 +139,6 @@ jobs:
           python-version: '3.9'
       - run: python -X oldparser -m py_compile deploy/dot_firmware.py
       - run: ./deploy/dot_firmware.py --help
-      - run: ./deploy/dot_firmware.py root --help
-      - run: ./deploy/dot_firmware.py stock --help
       - run: python -X oldparser -m py_compile deploy/install.py
       - run: ./deploy/install.py --help
       - run: python -X oldparser -m py_compile deploy/uninstall.py

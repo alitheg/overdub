@@ -1,10 +1,11 @@
 # Rooting
 
-`deploy/dot_firmware.py root` takes a Dot from stock Fire OS 6 to rooted Fire
-OS 5.5.5.4. It polls the Dot every 2 seconds, does the stage for the state it
+`deploy/dot_firmware.py` takes a Dot from stock Fire OS 6 to rooted Fire OS
+5.5.5.4. It polls the Dot every 2 seconds, does the stage for the state it
 finds, and stops when the Dot is in the state its optional target names. The
 table gives the stages for the default, `v1-bboe`; [Targets](#targets) has the
-others.
+others, and [Back to stock](#back-to-stock-the-stock-target) the `stock`
+target.
 
 | state | how it is recognised | what the run does |
 |---|---|---|
@@ -51,23 +52,33 @@ others.
 - After boot0 is erased the Dot shows up only as the bootrom's serial
   port, which no probe sees. So the script creates `boot0-erased` in its cache
   before the erase. It deletes the file once amonet logs `Reboot to unlocked
-  fastboot`, when boot0 is written, and whenever it sees the Dot in any state.
+  fastboot`, when boot0 is written, and whenever it sees the Dot booted or in
+  fastboot, which only a preloader in boot0 reaches. TWRP does not count: it
+  keeps running from RAM after the restore to stock clears boot0.
 - A run that finds the file and no Dot runs the bootrom step again, without
   the erase. A run stopped inside amonet's payload leaves the Dot there, and
   the payload never restarts. So the resume first sends every MediaTek port
   the payload's reboot command, `0xf00dd00d` then `0x3000`; the Dot came back
-  as its bootrom within 5 seconds. Sent to the bootrom itself, it is not
-  tested.
+  as its bootrom within 5 seconds. Sent to a live bootrom on bryce, it did
+  no harm: the handshake that followed went through.
 - The command goes out before amonet starts. amonet records the ports at
   start and takes any port that appears later as the Dot, so a command sent
-  after it starts could reach a Dot it is already talking to. A port reset
-  before amonet starts is either still gone or back as the bootrom; in the
-  second case amonet takes it at the bootrom's next reset.
+  after it starts could reach a Dot it is already talking to. On a resume it
+  also takes a bootrom port, `0e8d:0003`, that was there at start: that is
+  the Dot, whose window may close before any other port appears.
 - On macOS, a run stopped 12 seconds into amonet's `tz` write resumed this
   way: amonet found the bootrom 4 seconds after the run started, and the root
   finished.
-- With boot0 erased the bootrom resets every 30 to 40 seconds: from Linux,
-  the resume went on after 30 seconds, twice, with no one touching the Dot.
+- From Linux, with boot0 erased, the resume went on after 30 seconds, twice,
+  with no one touching the Dot. From macOS the bootrom gives one window per
+  power-on: after `adb reboot` from TWRP it appeared 4 s later, stayed 40 s,
+  and then showed nothing on USB for the 2.5 minutes watched. Only a replug
+  opened another window.
+- So a resume started inside that window needs no replug: bryce was
+  replugged, and a resume started 8 s after its bootrom appeared took that
+  port. The reset command had reached the bootrom first, and the handshake
+  still went through. A resume started after the window closes asks for the
+  replug.
 
 ## A Dot on emOS
 
@@ -145,7 +156,7 @@ others.
 ## Recording a run
 
 - `--verbose` prints each `adb` and `fastboot` command and its exit status
-  with the time, and each state `root` sees. The 2-second polls are not
+  with the time, and each state the run sees. The 2-second polls are not
   printed.
 - In verbose mode, or when the output is not a terminal, a stage prints a line
   when it starts and when it ends, with no running count. Output that is not
@@ -158,12 +169,10 @@ others.
   code page.
 - A finished line is at most 79 columns, so it does not wrap on an 80-column
   terminal. That caps a stage label at 36 characters.
-- Each stage is numbered by its place in a root from stock, `[1/9]` to
-  `[9/9]`. A run that starts part way starts part way through the count. The
-  resume after a stopped bootrom step shows both of its stages as `[3/9]`,
-  the downgrade they finish.
-- `stock` numbers its steps `[ 1/16]` to `[16/16]`. A write whose target
-  already reads back the right md5 ends `skip`, in place of its seconds.
+- Steps are numbered from 1 in each run, against the total that
+  [Targets](#targets) says how the run counts. The restore is 16 of them. A
+  restore write whose target already reads back the right md5 ends `skip`,
+  in place of its seconds.
 - Each stage's estimate is an upper bound: the slowest time measured for it,
   rounded up to the next 5 seconds, over roots on macOS and Windows 11. One
   case is left out: a first run on a computer that finds the Dot already in
@@ -227,9 +236,10 @@ ring read white.
 - adb must be 1.0.36 (platform-tools r24) or newer: 1.0.32 answers
   `wait-for-recovery` with `unknown host service` and passes `shell -n` to the
   device. Ubuntu 22.04 and 24.04 ship 1.0.41. fastboot must accept `-S`, as
-  every release back to r19 does. Both subcommands check `adb version`, and
-  `root` checks `fastboot --help` for `-S`. Old releases, run with no
-  device, set these floors.
+  every release back to r19 does. Every run checks `adb version` and
+  `fastboot --help` for `-S`, the stock target included, because a route to
+  stock can pass through fastboot. Old releases, run with no device, set
+  these floors.
 - Downloads go to `$XDG_CACHE_HOME/overdub-firmware` (default
   `~/.cache/overdub-firmware`), or `%LOCALAPPDATA%\overdub-firmware` on
   Windows. The script moves what the old `overdub-root` and `overdub-stock`
@@ -244,10 +254,11 @@ ring read white.
   `md5` is in it, and rebuilds otherwise. If the md5 read back still fails
   after the last try, the script deletes `md5` alone, which works even when
   another process holds the image open.
-- `root` starts the downloads in a background thread at the first probe
+- The run starts the downloads in a background thread at the first probe
   that does not find the Dot booted, rooted or starting. So they overlap the
   wait for a Dot and for the fastboot gesture. A Dot found rooted needs no
-  download.
+  download for `v1` or `v1-bboe`. For `stock` and `v2` the main thread
+  downloads the build before the first stage.
 - The main thread waits for that thread's locks half a second at a time.
   On Windows, Ctrl-C does not interrupt a blocking lock wait, so one long wait
   would ignore it until a 397 MB download ended.
@@ -274,11 +285,11 @@ ring read white.
   wheel.
 - `adb get-state` reports `unauthorized` on stderr, so the script reads both
   streams.
-- Without `ANDROID_SERIAL`, both subcommands use the one Dot on USB in
+- Without `ANDROID_SERIAL`, the run uses the one Dot on USB in
   `adb devices -l`, and ignore network adb: a rooted Dot with tcp/5555 open
   would make `adb get-state` answer `more than one device/emulator`.
-  `root` picks again on every poll, because each reboot drops the Dot
-  off USB. With two Dots on USB both subcommands stop and ask for
+  The run picks again on every poll, because each reboot drops the Dot
+  off USB. With two Dots on USB the run stops and asks for
   `ANDROID_SERIAL`, which fastboot follows too.
 - An `ANDROID_SERIAL` of the form `host:port` is refused: TWRP starts no
   Wi-Fi, and fastboot and the bootrom are USB-only.
@@ -315,9 +326,9 @@ ring read white.
   keeps its old permissions: with the group added and the old server up,
   `adb devices` listed nothing. So after `adb kill-server`, `sg plugdev -c`
   runs a script with the group, without a new login.
-- Both subcommands refuse to run as root: the downloads would belong to root,
-  and the rules make `sudo` needless.
-- Both check at start that the process has `plugdev`, even for a desktop user
+- The script refuses to run as root: the downloads would belong to root, and
+  the rules make `sudo` needless.
+- It checks at start that the process has `plugdev`, even for a desktop user
   covered by `uaccess`, so the check is one question. A user not in the group
   gets the rules and the commands to add them, starting with
   `groupadd -f plugdev` because Fedora and Arch have no such group. A user in
@@ -325,7 +336,7 @@ ring read white.
   line. The `sg` line repeats the command as run, interpreter, path and flags
   included, because `./dot_firmware.py` is wrong from another directory.
 - Without the rules adb lists the Dot as `no permissions`. When that lasts 5
-  seconds and nothing else listed is usable, both subcommands stop and print
+  seconds and nothing else listed is usable, the run stops and prints
   the same rules and commands. A shorter spell is udev still setting
   permissions. A phone the user cannot open, beside a Dot that answers, does
   not stop them.
@@ -347,6 +358,7 @@ ring read white.
 | `v1-bboe`, the default | amonet v1.1.0, TWRP 3.7.0_9-bboe2, rooted Fire OS 5.5.5.4 | rooted-bboe |
 | `v1` | the same, with v1.1.0's own TWRP 3.2.3 | rooted-v1 |
 | `v2` | amonet v2.0.0's TWRP, Fire OS 6 8146 in both slots, `boot-root.zip` | v2-booted |
+| `stock BUILD` | Amazon's Fire OS 6 `BUILD`, the whole Dot erased | stock-booted |
 
 - Each poll picks the stage for the state found and the target, so a run
   goes from any state to any target, a rooted Dot included. Every state has
@@ -399,10 +411,10 @@ ring read white.
 - The zip checks `ro.build.product` in `/default.prop` and needs `/sbin/sh`
   and `sgdisk`. Both v1 TWRPs say `biscuit` and ship both.
 - A v1 Dot started in fastboot reads as locked-v1-fastboot, and the
-  fastbrick leaves it in v2.0.0's TWRP on v1's partition table. The probe reads that
-  as amonet-v2-twrp-v1-table, and for `v2` the run installs the zip there
-  first. The v2 install itself stops if `boot_a_x` is still there, or if
-  `sgdisk` prints no `userdata`.
+  fastbrick leaves it in v2.0.0's TWRP on v1's partition table. The probe
+  reads that as amonet-v2-twrp-v1-table, and for `v2` the run installs the
+  zip there first. The v2 install itself stops if `boot_a_x` is still there,
+  or if `sgdisk` prints no `userdata`.
 - In v2.0.0's fastboot the run asks for the + button at power-on, which
   starts v2.0.0's TWRP, and waits for it without limit.
 - `--short` goes with any target. Its bootrom step writes amonet v1.1.0, and
@@ -494,8 +506,8 @@ ring read white.
   `__bionic_open_tzdata...` lines from `adb shell` output.
 - adb answers before MTP is on, as `18d1:d001` in this TWRP. The switch to
   `mtp,adb` puts the Dot back on USB under a new ID. In 3.2.3 the switch
-  failed a push with `failed to read copy response: EOF`. So both subcommands
-  wait for `mtp` in `sys.usb.config`, and each push gets 3 tries.
+  failed a push with `failed to read copy response: EOF`. So the run waits
+  for `mtp` in `sys.usb.config`, and each push gets 3 tries.
 - This TWRP's `adb shell` returns the exit status. So each device-side step
   is a pushed script, judged by its status. The scripts have `\n` line
   endings.
@@ -616,12 +628,46 @@ ring read white.
   run the script runs `pm hide com.amazon.device.software.ota`, then reads
   `hidden=true` back from `dumpsys package`.
 
-## Back to stock: dot_firmware.py stock
+## Back to stock: the stock target
 
 `deploy/dot_firmware.py stock <build>` returns a Dot on amonet v1.1.0 or v2.0.0
-to stock Fire OS 6, to test `root` from a clean start. It follows `root`'s host
-rules.
+to stock Fire OS 6, to test a root from a clean start. `stock` is a target like
+the others, so every state has a route to it: a rooted Dot goes to recovery,
+v1's fastboot gets v1's TWRP, v1's locked fastboot gets the fastbrick, and in
+any TWRP the restore runs.
 
+- `stock` takes a `BUILD`, and no other target does. The run downloads the
+  build before it touches the Dot.
+- The restore ends at stock-booted: the run waits for stock to start, which
+  shows as `adb` answering `unauthorized` about 1.5 minutes after the reboot.
+  A Dot already stock-booted, or in stock fastboot, has nothing to restore.
+  A v2-unlocked Dot booted into Fire OS 6 without root reads the same. So
+  the message says "appears", then names the + gesture, which starts
+  v2.0.0's TWRP, for a Dot unlocked with amonet v2.0.0. The condition comes
+  first, so the owner of a plain stock Dot can skip it.
+- The restore clears boot0 first and writes it back last. It creates
+  `boot0-erased` before the clear and deletes it once boot0 reads back, as
+  the downgrade does. So a restore stopped in between, then rebooted, is
+  resumed through amonet v1.1.0's bootrom step and v1's TWRP, and restored
+  again. Before the marker, `stock` could not resume that Dot: it needed a
+  TWRP, and the Dot showed up only as its bootrom.
+- A resume clears the TWRP states from the run's acted-on set, so a run
+  that started in TWRP acts on TWRP again after the bootrom step.
+- Measured on bryce, 2026-10-04: a restore stopped during the system write,
+  then `adb reboot` from TWRP, then a rerun about 20 s later. The bootrom's
+  one window was open when the rerun's bootrom step started, and amonet then
+  skipped ports already present. The window closed, and nothing showed on
+  USB for 9.5 minutes, until the cable was unplugged and plugged back in.
+  The bootrom step then found it, and the run went on through v1's TWRP and
+  the whole restore to stock 8146: `[1/19]` to `[19/19]`, 13 min 50 s with
+  the wait. The resume now takes a bootrom port already present, and asks
+  for the replug only if nothing happens within a minute.
+- A restore stopped without a reboot leaves TWRP running, so a rerun restores
+  from there.
+- The wait for stock to start has the 10-minute limit of any other state.
+- A booted Fire OS 5 Dot without root gets `adb reboot recovery`, as the
+  `stock` subcommand did. For the other targets that state is a boot still
+  in progress, and the run waits.
 - v2.0.0's TWRP mounts by name, under `/dev/block/platform/.../by-name/`, so an
   unmount pattern anchored on `/dev/block/mmcblk0` matched nothing there and
   the writes went to mounted filesystems. What is left mounted is named
@@ -633,11 +679,14 @@ rules.
   truncates at its `seek` offset, and the block device answers `ftruncate:
   Invalid argument`. So the one write with `seek` passes `conv=notrunc` to
   `toybox dd`.
-- Measured on bryce, 2026-10-04: `stock 8146` from rooted-v1, through
-  v1.1.0's TWRP 3.2.3, in 6 min 9 s; from v2-booted, through v2.0.0's TWRP,
-  in 2 min 59 s; from rooted-bboe in 1 min 52 s. Each was rooted again
-  after the fastboot gesture: to `v2` in 7 steps, `v1` in 10, `v1-bboe`
-  in 9, as the table counts.
+- Measured on bryce, 2026-10-04, before `stock` was a target: `stock 8146`
+  from rooted-v1, through v1.1.0's TWRP 3.2.3, in 6 min 9 s; from
+  v2-booted, through v2.0.0's TWRP, in 2 min 59 s; from rooted-bboe in
+  1 min 52 s. Each was rooted again after the fastboot gesture: to `v2` in
+  7 steps, `v1` in 10, `v1-bboe` in 9, as the table counts.
+- As the target: from rooted-bboe in 3 min 11 s, `[1/17]` to `[17/17]`,
+  ending when stock started. Run again on the stock Dot, it reported
+  nothing to restore and downloaded nothing.
 - `sgdisk`, `mke2fs`, `blockdev` and `md5sum` are looked for before the
   countdown, because `sgdisk` and `mke2fs` are not reached until after 1.6 GB
   has gone in.
@@ -717,5 +766,5 @@ rules.
   that looks right pays for the full comparison, 13 s against the 80 s a write
   would take.
 - A restored Dot has no Wi-Fi until it is set up in the Alexa app. To root it
-  again, skip that setup: on Wi-Fi it can update to a build `root` has
-  not met, or away from the build under test.
+  again, skip that setup: on Wi-Fi it can update to a build
+  `dot_firmware.py` has not met, or away from the build under test.
