@@ -371,7 +371,10 @@ ring read white.
 ## Unlock: amonet v2.0.0
 
 - The fastbrick image is `fastbrick-20221007.img` when `lk_build_desc` is
-  `63cb91b-20221007_072309`, else `fastbrick.img`.
+  `63cb91b-20221007_072309` or `41fb3ce-20221007_151724`, else
+  `fastbrick.img`. That one payload takes both bootloaders, where amonet
+  v2.0.0's own map lists only the first. The second ships in 4315 alone,
+  which the default image does not unlock.
 - A flash that returns means the exploit did not start, so it is retried, up to
   10 times. A flash still running after 8 seconds means the exploit is running:
   the script stops fastboot and leaves the Dot to reach TWRP.
@@ -449,11 +452,11 @@ ring read white.
   booting. The check comes before the zip's `(!)` lines, some of which it
   prints and goes on past.
 - A TWRP that does not pass the zip's output on would still leave the
-  marker, and TWRP 3.2.3 was not tried here. So a resume without an erase or `--short`
-  that sees the preloader, `0e8d:2000`, takes boot0 as intact: it stops the
-  bootrom step, deletes the marker, and goes on polling. On a Dot rebooted
-  from Fire OS 6 with the marker set by hand, the run said so 2 s later and
-  ended at v2-booted, with nothing written.
+  marker, and TWRP 3.2.3 was not tried here. So a resume without an erase
+  or `--short` that sees the preloader, `0e8d:2000`, takes boot0 as
+  intact: it stops the bootrom step, deletes the marker, and goes on
+  polling. On a Dot rebooted from Fire OS 6 with the marker set by hand,
+  the run said so 2 s later and ended at v2-booted, with nothing written.
 - Measured on a Dot: TWRP 3.7.0_9-bboe2 installs the copy in 19 s, as it
   did the pinned zip, and the Dot came up in v2.0.0's TWRP with no resume.
 - Cut on a Dot: a reboot from the Dot itself when the zip logged
@@ -740,13 +743,29 @@ any TWRP the restore runs.
   1 min 52 s. Each was rooted again after the fastboot gesture: to `v2` in
   7 steps, `v1` in 10, `v1-bboe` in 9, as the table counts.
 - As the target: from rooted-bboe in 3 min 11 s, `[1/17]` to `[17/17]`,
-  ending when stock started. Run again on the stock Dot, it reported
-  nothing to restore and downloaded nothing.
+  ending when stock started, and 4315 in 4 min 9 s, which rooted back in
+  9 min 8 s. Run again on the stock Dot, it reported nothing to restore
+  and downloaded nothing.
 - `sgdisk`, `mke2fs`, `blockdev` and `md5sum` are looked for before the
   countdown, because `sgdisk` and `mke2fs` are not reached until after 1.6 GB
   has gone in.
-- 6.5.5.5 (4310M) and Fire OS 5 ship a block image (`system.new.dat`) rather
-  than a `payload.bin`, which is why they are not among the builds offered.
+- 4315 ships a block OTA in place of a `payload.bin`: `system.new.dat`
+  with a transfer list, and boot, LK, TZ and the preloader as files in the
+  zip. `system.img` is built from the list, which must be version 3 or 4
+  and use only `erase`, `zero` and `new`, since the rest patch blocks this
+  does not have. Its ranges must cover the image from 0, and no block may
+  be written twice: Fire OS 5's own list erases the whole image and then
+  writes over it, where 4315's erases only what it does not write. Only
+  the `new` ranges are written, because the file is truncated to size
+  first, and `system.new.dat` must end where the last of them does. A block OTA
+  carries no hash per image, so they rest on the OTA's pinned SHA-256.
+- LK, TZ and boot are padded to a multiple of 4096 bytes. A write is
+  checked over whole sectors, `n // 512` of them, and 4315's LK is 241,448
+  bytes, so the check left the tail out and failed on a write that had
+  gone in. A payload build's images are already whole blocks.
+- 4315's package number, 8087722874, is not the one the system it installs
+  reports, 8087722884. The table's is the package's, which is what names
+  the download.
 - FTVDB keys an OTA by its md5, so the download is found by md5 and then
   pinned by the SHA-256 of a copy that matched it.
 - Each `payload.bin` operation is read where it lies, so peak memory is one

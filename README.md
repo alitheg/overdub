@@ -129,7 +129,7 @@ Root the Dot, or return it to stock:
 ```sh
 curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
 python3 dot_firmware.py              # root it
-python3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
+python3 dot_firmware.py stock 8146   # or 4315, 4405, 5041, 6302, 8138, 8142
 ```
 
 ### Linux (Debian, Ubuntu)
@@ -150,7 +150,7 @@ Root the Dot, or return it to stock:
 ```sh
 curl -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
 python3 dot_firmware.py              # root it
-python3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
+python3 dot_firmware.py stock 8146   # or 4315, 4405, 5041, 6302, 8138, 8142
 ```
 
 ### Windows
@@ -171,7 +171,7 @@ Root the Dot, or return it to stock:
 ```powershell
 curl.exe -LO https://raw.githubusercontent.com/bboe/overdub/main/deploy/dot_firmware.py
 py -3 dot_firmware.py              # root it
-py -3 dot_firmware.py stock 8146   # or 4405, 5041, 6302, 8138, 8142
+py -3 dot_firmware.py stock 8146   # or 4315, 4405, 5041, 6302, 8138, 8142
 ```
 
 ## Install from a release

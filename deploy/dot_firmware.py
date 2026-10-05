@@ -50,6 +50,12 @@ AS_ROOT = (
 )
 BCB = b"\0ABB\x01\x8f\0"
 BCB_OFFSET = 0x360
+BLOCK_IMAGES = {
+    "boot": "boot.img",
+    "lk": "images/lk.bin",
+    "preloader": "images/preloader.img",
+    "tee": "images/tz.img",
+}
 BOOT_ROOT_SHA256 = "de49cc88b27a8e77cf97cf0156bee50e4ddc0e116c41aaede06b494e38397be0"
 BOOT_ROOT_URL = (
     "https://xdaforums.com/attachments/boot-root-zip.6388001/"
@@ -111,6 +117,7 @@ SHORT_WAIT = 5
 SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 STOCK_PARTITIONS = 16
 STOCK_STEPS = 16
+TRANSFER_FIELDS = 2
 TWRP_VERSION = "3.7.0_9-bboe2"
 TWRP_VERSIONS = ("3.2.", "3.7.")
 UPDATER = "com.amazon.device.software.ota"
@@ -141,6 +148,14 @@ class Build(NamedTuple):
 
 
 BUILDS = {
+    "4315": Build(
+        date="2023-11-20",
+        ftvdb_version="6-5-5-5",
+        md5="03c7c4dc338a93635dda0f5e1cd4e451",
+        ns="NS6555",
+        number="8087722874",
+        sha256="c1ca33efd975cb8491ea9438eff95af559c632dd7ca75ff3b73facacce5f758a",
+    ),
     "4405": Build(
         date="2023-01-21",
         ftvdb_version="6-5-5-6",
@@ -269,6 +284,7 @@ class Kind(enum.Enum):
 class LK(enum.Enum):
     V1 = "f379dba-20170906_000423"
     V2 = "63cb91b-20221007_072309"
+    V2_MIGRATE = "41fb3ce-20221007_151724"
 
 
 class ManifestField(enum.IntEnum):
@@ -1406,6 +1422,9 @@ def erase_from_twrp() -> str:
 
 def extract(*, ota: pathlib.Path, work: pathlib.Path) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     with zipfile.ZipFile(ota) as z:  # ruff: ignore[too-many-nested-blocks]
+        if "payload.bin" not in z.namelist():
+            extract_blocks(work=work, z=z)
+            return
         with z.open("payload.bin") as f:
             h = f.read(24)
             if h[:4] != b"CrAU" or struct.unpack(">Q", h[4:12])[0] != PAYLOAD_VERSION:
@@ -1473,6 +1492,32 @@ def extract(*, ota: pathlib.Path, work: pathlib.Path) -> None:  # ruff: ignore[c
                 passed(f"{name:>{max(map(len, IMAGES))}} matches the manifest")
 
 
+def extract_blocks(*, work: pathlib.Path, z: zipfile.ZipFile) -> None:
+    for name, member in BLOCK_IMAGES.items():
+        data = z.read(member)
+        if name != "preloader":
+            data += bytes(-len(data) % 4096)
+        (work / (name + ".img")).write_bytes(data)
+        passed(f"{name:>{max(map(len, IMAGES))}} taken from the OTA")
+    commands, size = transfer_list(z.read("system.transfer.list").decode())
+    with (work / "system.img").open("wb") as out, z.open("system.new.dat") as dat:
+        out.truncate(size)
+        for verb, ranges in commands:
+            if verb != "new":
+                continue
+            for start, end in ranges:
+                out.seek(start)
+                for offset in range(start, end, 1 << 20):
+                    n = min(1 << 20, end - offset)
+                    chunk = dat.read(n)
+                    if len(chunk) != n:
+                        _die(message="the OTA's system.new.dat is short")
+                    out.write(chunk)
+        if dat.read(1):
+            _die(message="the OTA's system.new.dat outlasts its transfer list")
+    passed(f"{'system':>{max(map(len, IMAGES))}} built from the transfer list")
+
+
 def fastbrick() -> None:
     amonet = unpack(AMONET_V2)
     if getvar("product") != "BISCUIT":
@@ -1484,7 +1529,7 @@ def fastbrick() -> None:
             " the Dot was not modified"
         )
     image = "bin/fastbrick.img"
-    if lk == LK.V2.value:
+    if lk in {LK.V2.value, LK.V2_MIGRATE.value}:
         image = "bin/fastbrick-20221007.img"
     PROGRESS.begin(estimate="10 s", label="unlocking with amonet v2.0.0")
     for attempt in range(10):
@@ -1506,7 +1551,10 @@ def fastbrick() -> None:
                 estimate="40 s", label="waiting for v2.0.0 recovery to start"
             )
             return
-    _die(message="the unlock did not start after 10 attempts")
+    _die(
+        message=f"the unlock did not start after 10 attempts, with {image} for"
+        f" the bootloader {lk}; the Dot was not modified"
+    )
 
 
 def fetch(download: Download) -> pathlib.Path:
@@ -2895,6 +2943,45 @@ def system_image() -> tuple[pathlib.Path, str, int]:
             build_system(target)
     want, blocks = (target / "md5").read_text().split()
     return target / "system.img.gz", want, int(blocks)
+
+
+def transfer_command(words: list[str]) -> tuple[str, list[tuple[int, int]]]:
+    numbers = words[1].split(",") if len(words) == TRANSFER_FIELDS else []
+    if words[0] not in {"erase", "new", "zero"} or not all(
+        n.isdigit() for n in numbers
+    ):
+        _die(message=f"the OTA's transfer list has a {words[0]!r} command")
+    bounds = [int(n) * 4096 for n in numbers[1:]]
+    ranges = list(zip(bounds[::2], bounds[1::2]))
+    if any(start >= end for start, end in ranges):
+        _die(message="the OTA's transfer list has an empty or reversed range")
+    return words[0], ranges
+
+
+def transfer_list(text: str) -> tuple[list[tuple[str, list[tuple[int, int]]]], int]:
+    lines = text.split("\n")
+    if lines[0] not in {"3", "4"}:
+        _die(message=f"the OTA's transfer list is version {lines[0]}")
+    commands = [
+        transfer_command(words)
+        for words in (line.split() for line in lines[4:])
+        if words
+    ]
+    size = 0
+    for start, end in sorted(r for _, ranges in commands for r in ranges):
+        if start > size:
+            _die(message="the OTA's transfer list leaves a gap")
+        size = max(size, end)
+    if not size:
+        _die(message="the OTA's transfer list writes nothing")
+    written = 0
+    for start, end in sorted(
+        r for verb, ranges in commands if verb != "erase" for r in ranges
+    ):
+        if start < written:
+            _die(message="the OTA's transfer list writes a block twice")
+        written = end
+    return commands, size
 
 
 def unmount(*, started: bool = False) -> None:
