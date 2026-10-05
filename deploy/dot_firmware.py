@@ -68,6 +68,7 @@ FASTBOOT_MODE = (
 )
 FTVDB = "https://ftvdb.com/echo/firmware/com.amazon.biscuit.android.os/"
 GPT_HEADER_SIZE = 92
+HANDSHAKE_WAIT = 10
 HEAD_CHECK = 1 << 20
 IMAGES = ("preloader", "lk", "tee", "boot", "system")
 LK_DESC = re.compile(r"[0-9a-f]{7}-\d{8}_\d{6}")
@@ -771,12 +772,31 @@ def bootrom(  # ruff: ignore[complex-structure, too-many-branches, too-many-stat
                 brom.stdin.write(b"\n" * 5)
                 brom.stdin.close()
         if not erase:
-            PROGRESS.begin(estimate="30 s", label="finishing the downgrade to v1.1.0")
-        try:
-            brom.wait(timeout=1800)
-        except subprocess.TimeoutExpired:
-            brom.kill()
-            _die(message=f"v1.1.0's bootrom step did not finish; see {log_path}")
+            PROGRESS.begin(estimate="30 s", label="writing amonet v1.1.0's bootloader")
+        deadline = time.monotonic() + 1800
+        unanswered = 0
+        while brom.poll() is None:
+            if time.monotonic() > deadline:
+                brom.kill()
+                _die(message=f"v1.1.0's bootrom step did not finish; see {log_path}")
+            text = log_path.read_text(errors="replace")
+            if text.count("did not answer the handshake") > unanswered:
+                unanswered = text.count("did not answer the handshake")
+                if SESSION.short:
+                    brom.kill()
+                    _die(
+                        message="the Dot's bootrom did not answer. Nothing was"
+                        " written. Unplug the Dot. " + again()
+                    )
+                PROGRESS.note(
+                    "The Dot's bootrom did not answer. Unplug the Dot and plug it"
+                    " back in; the run goes on when its bootrom returns."
+                )
+            if text.count("Cannot open") > unopened:
+                unopened = text.count("Cannot open")
+                said = "Cannot open" + text.split("Cannot open")[-1].splitlines()[0]
+                PROGRESS.note(said + ". The run keeps trying.")
+            time.sleep(1)
     if brom.returncode != 0:
         said = log_path.read_text(errors="replace")
         if SESSION.short and (
@@ -1020,6 +1040,31 @@ def child_bootrom() -> int:  # ruff: ignore[complex-structure, too-many-statemen
                     log("Ignoring the preloader on " + port)
             time.sleep(0.25)
 
+    def answered(self: common.Device) -> bool:
+        deadline = time.monotonic() + HANDSHAKE_WAIT
+        try:
+            while time.monotonic() < deadline:
+                if self._writeb(b"\xa0") == b"\x5f":
+                    return True
+                self.dev.flushInput()
+        except serial.SerialException:
+            pass
+        return False
+
+    def handshake(self: common.Device) -> None:
+        while not answered(self):
+            log("The bootrom did not answer the handshake")
+            port = self.dev.port
+            with contextlib.suppress(serial.SerialException):
+                self.dev.close()
+            self.dev = None
+            while any(p.device == port for p in list_ports.comports()):
+                time.sleep(0.25)
+            find_device(self)
+        self.check(self._writeb(b"\x0a"), b"\xf5")
+        self.check(self._writeb(b"\x50"), b"\xaf")
+        self.check(self._writeb(b"\x05"), b"\xfa")
+
     def load_payload(dev: common.Device, path: str) -> None:
         start_payload(dev, path)
         try:
@@ -1034,6 +1079,7 @@ def child_bootrom() -> int:  # ruff: ignore[complex-structure, too-many-statemen
     common.Device.emmc_read = emmc_read
     common.Device.emmc_write_blocks = emmc_write_blocks
     common.Device.find_device = find_device
+    common.Device.handshake = handshake
     common.Device.rpmb_read = rpmb_read
     amonet.flash_data = flash_data
     amonet.load_payload = load_payload

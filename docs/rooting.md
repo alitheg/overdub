@@ -79,6 +79,24 @@ target.
   port. The reset command had reached the bootrom first, and the handshake
   still went through. A resume started after the window closes asks for the
   replug.
+- A run stopped while amonet sends its payload, before the payload runs,
+  leaves the bootrom inside its write command, waiting for the rest of the
+  payload's words. The reset command reaches it as data. amonet's handshake
+  sends `0xa0` and waits for `0x5f` with no limit, and the bootrom echoes a
+  word only after 4 bytes, so 3 reads in 4 wait out amonet's 5-second
+  timeout. Stopped 0.3 s into a 0.8 s send, about 12 KB were left: 12 hours
+  of handshake. The run had disabled the watchdog, so only a power cycle
+  clears it.
+- So the handshake gives up after 10 seconds without `0x5f`, where a live
+  bootrom answers in about 2 ms. The run then asks for a replug, waits for
+  the port to go and come back, and tries again. Under `--short` it stops
+  instead: a replug without the short brings up the preloader, and the
+  Enter that ends amonet's short prompt has already been sent, so a second
+  short would get no countdown. Before this, the replug
+  failed the run with `Device not configured`, and a rerun inside the new
+  window went on through the root. With the limit, on a Dot stopped the same
+  way, the resume asked for the replug 10 s after it took the port, and the
+  same run finished the root to v1-bboe in 9 min 6 s.
 
 ## A Dot on emOS
 
