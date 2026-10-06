@@ -14,8 +14,9 @@ target.
 | locked-v1-fastboot | `unlock_status` is `false`, and `lk_build_desc` is v1's: v1's own fastboot, which is locked | the same |
 | emos | no adb or fastboot, and one serial port with USB ID `1949:2007` | `/init recovery` at emOS's serial console |
 | v2-booted | Fire OS 6, and `id` or `su -c id` answers uid 0 | `adb reboot recovery`, into v2.0.0's TWRP; ends a `v2` run |
-| amonet-v2-twrp, v2-fastboot | unlocked, `lk_build_desc` is not v1's | downgrade to amonet v1.1.0 |
-| amonet-v2-twrp-v1-table | amonet-v2-twrp, and `sgdisk --print` lists `boot_a_x` | the same |
+| amonet-v2-twrp | unlocked, `lk_build_desc` is not v1's, `mtp` in `sys.usb.config` | makes room for amonet v1.1.0 in the table, then reboots so the kernel rereads it |
+| amonet-v2-twrp-v1-table | amonet-v2-twrp, and `sgdisk --print` lists `boot_a_x` | writes amonet v1.1.0's chain and Fire OS 5.5.5.4, preloader last |
+| v2-fastboot | unlocked, `lk_build_desc` is not v1's | downgrade to amonet v1.1.0 through the bootrom |
 | v1-fastboot | `lk_build_desc` is `f379dba-20170906_000423` | v1 TEE and TWRP 3.7.0_9-bboe2, then recovery |
 | amonet-v1-twrp | recovery, v1's `lk_build_desc`, another `ro.twrp.version`, `mtp` in `sys.usb.config` | writes TWRP 3.7.0_9-bboe2 to `recovery`, reboots into it |
 | bboe-v1-twrp | recovery, v1's `lk_build_desc`, `ro.twrp.version` 3.7.0_9-bboe2, `mtp` in `sys.usb.config` | Fire OS 5.5.5.4, boot and /system patches, Magisk 17.3 |
@@ -299,9 +300,10 @@ ring read white.
   that zip.
 - Nothing deletes a download, so a later run downloads nothing. A rooted run
   prints the cache's path and size and says it is safe to delete.
-- amonet v1.1.0's bootrom step needs pyserial. The script puts the pinned pure
-  wheel from PyPI on the child's `PYTHONPATH`, and Python imports it straight
-  from the zip. Nothing is installed.
+- The emOS probe and the bootrom step need pyserial, and the probe runs on
+  every poll that lists no Dot, so every run fetches the wheel. The script puts
+  the pinned pure wheel from PyPI on the child's `PYTHONPATH`, and Python
+  imports it straight from the zip. Nothing is installed.
 - Each child is the script itself, run as `dot_firmware.py _child <name>`.
   pyserial is on the child's path only, and the bootrom child also needs
   amonet's `modules` directory, so their imports wait until the child runs.
@@ -402,9 +404,9 @@ ring read white.
   again from there, so the total changes only when the Dot surprised the
   run. Step numbers only go forward.
 - `v1` and `v1-bboe` write the same /system, boot image and Magisk. Only
-  `recovery` differs, so `v1` installs through bboe2, which moves data about
-  3 times as fast as 3.2.3, then writes 3.2.3 to `recovery`. A rooted Dot
-  moves between the two with that one write, from Fire OS through `su`.
+  `recovery` differs, and the write from v2.0.0's TWRP puts the target's own
+  TWRP there. A rooted Dot moves between the two with that one write, from
+  Fire OS through `su`.
 - Booted Fire OS 5 has no `md5sum`. So the probe and the write read
   `recovery` back through `adb exec-out` and `su`, and hash it on the host.
   On a Dot, 13,953,024 bytes took 2.2 s. One read, at the larger image's
@@ -484,25 +486,88 @@ ring read white.
 | rooted-bboe | v1 | 9 s |
 | rooted-v1 | v1-bboe | 9 s |
 | rooted-bboe | v2 | 5 min 22 s: recovery 30 s, the zip 19 s and its reboot 19 s, the wipes 3 s, the installs 96 s and 117 s, `boot-root.zip` 8 s, Fire OS 6's boot 24 s |
-| v2-booted | v1 | 8 min 28 s: recovery 19 s, the downgrade 43 s, TWRP 27 s, the install 86 s, Fire OS 5's first boot 321 s, TWRP 3.2.3 7 s |
+| v2-booted | v1 | 8 min 28 s through the bootrom, which this starting state no longer uses, kept to compare against: recovery 19 s, the downgrade 43 s, TWRP 27 s, the install 86 s, Fire OS 5's first boot 321 s, TWRP 3.2.3 7 s |
+| v2-booted | v1-bboe | 7 min 42 s, with no bootrom: recovery 19 s, the table 1 s, recovery 19 s, boot0 under 1 s, the chain 6 s, `misc` under 1 s, userdata 4 s, `/system` 79 s, the boot image 3 s, Magisk 1 s, the preloader under 1 s, Fire OS 5's first boot 321 s |
+| stock-booted | stock 8146 | 3 min 11 s: recovery 30 s, `system_a` 81 s, the rest under 7 s each, stock's first boot 32 s |
 
 - `bcbtool get_active` printed a bare `a` or `b`, and each OTA install
   changed it. The downgrade ran on the stock partition table the zip left.
 - Not run: the zip from TWRP 3.2.3, the zip on v1's partition table in
   v2.0.0's TWRP, and `--short` to v2.
 
+## Writing amonet v1.1.0 from v2.0.0's TWRP
+
+- The run writes v1.1.0's chain and Fire OS 5.5.5.4 from v2.0.0's TWRP. The
+  bootrom step stays for `--short` and for v2's fastboot, where no TWRP is up.
+- The fastbrick appears to zero RPMB itself: its payload holds `Zeroing RPMB
+  block 0...` and `RPMB block 0 cleared and verified`. If so, a Dot that has
+  never seen v1 needs no bootrom either. **This is read from the payload's
+  strings, not measured.** Every Dot here already had a zeroed RPMB, and the
+  bootrom step it replaces verified the zero where this route assumes it. RPMB
+  is not readable from TWRP, so nothing checks it at run time. A wrong
+  assumption here is the one failure on this page that costs the eMMC short.
+- The table goes first, then a reboot, then boot0's header, then the rest, and
+  the preloader last. `BLKRRPART` is `EBUSY` while TWRP is up, so the appended
+  partitions need that reboot, and clearing boot0 before it would land there.
+- `sgdisk` writes the table, because it writes both GPT copies. Everything
+  else goes to a partition node: `dd` answers `EINVAL` past block 4194304, and
+  `boot_a` (7199744), `boot_b` (7425024) and the backup GPT (7651295) are all
+  above it. `losetup -o` reads 0 bytes there too.
+- The chain's writes name `dd`. They need no `conv`, which `/sbin/dd` refuses,
+  and a `seek` write to a block device does not truncate: after a root,
+  `boot.hdr` at block 0 of `boot_a` and `boot.payload` at 223207 both read back
+  whole. `SESSION.dd` is set only on the `stock` path.
+- Each target is checked as a block device, at the length its table entry
+  gives, before anything is written, boot0 included. `dd` to a name that is not
+  one writes a file in RAM `/dev` that reads back and matches.
+- The by-name bootloader nodes are decoys on both TWRPs, so the chain names
+  `mmcblk0pN`. bboe2 repoints by-name `boot_a` at `boot_a_x` and v2.0.0's TWRP
+  does not, so the boot image names `boot<slot>_x`.
+- `lk_build_desc` does not say a Dot is unlocked. amonet v2.0.0 patches the
+  stock LK and keeps its build string, so a v2 Dot and a locked stock 8146 both
+  read `63cb91b-20221007_072309`; `unlock_status` is in fastboot only. The
+  `stock` target writes no `recovery`, so a restored Dot keeps the TWRP it had,
+  and the probe would read that as amonet-v2-twrp.
+- A locked Dot cannot reach that state, so the reading above is a gap in the
+  logic and not a route. Measured twice on a Dot restored to stock 8146 with an
+  amonet TWRP left in `recovery`, v2.0.0's and 3.7.0_9-bboe2's:
+  `fastboot reboot recovery` answers `OKAY` and then nothing appears on USB for
+  90 s, in any mode. A locked LK refuses an unsigned recovery.
+- `v1_append`, `v1_chain` and `install_fireos6` still hash `lk_a` against
+  amonet's `lk.bin`, v2's then v1's, and refuse the rest, so a chain write
+  needs proof the Dot is amonet's rather than a build string it shares with
+  stock. v1's LK passes, so a part-written chain still resumes. Every stock LK
+  is 241664 or 245760 bytes, against 359744 and 372368, so none can match. The
+  check is defence in depth, not a fix for a reachable failure.
+- The probe waits for `mtp` on every TWRP, not only v1's. adb answers first,
+  and the switch to `mtp,adb` re-enumerates USB, so a stage starting in that
+  window reads truncated output with exit 255. So each device-side answer this
+  route reads ends in a marker of its own, `sgdisk --print` included, because
+  adb cuts the tail: a marker at the front leaves a cut line parsing as an
+  empty, and therefore passing, result. An md5 needs none, since a cut digest
+  is shorter than 32 characters.
+- v2.0.0's TWRP costs the install nothing. It returns `adb shell`'s exit status
+  and has every tool the install needs, and `/system` took 81 s there, as under
+  bboe2: `gunzip` and the eMMC are the limit, not adb.
+- `misc`'s boot control block is written, as a read of block 1, 7 bytes patched
+  at 0x160, and a write back, which is what v1.1.0's `reset_bcb` does. Leaving
+  it inherits whatever ran before: after a `v2` install a Dot read
+  `00 41 42 42 01 af 3e`, slot b at prio 14 with 3 tries, a live fallback to
+  the Fire OS 6 images a v1 chain cannot boot. The boot image goes to slot a to
+  match, not to `ro.boot.slot_suffix`, which here names the slot v2 booted.
+- Measured on a Dot: the timings table above has the figures.
+
 ## Downgrade: amonet v2.0.0 to v1.1.0
 
 - v1.1.0's `modules/main.py` must start **before** the Dot reboots: it records
   the serial ports that exist, then waits for a new one. The erase runs only
   if main.py is still running 3 seconds after it starts.
+- This route now runs only from v2's fastboot, for `--short`. From v2's TWRP
+  the targets write the chain in place instead; the section above has it.
 - The script stops if `lk_build_desc` is already v1.1.0's: a second erase
-  gains nothing. In v2's fastboot it reads `getvar`, and in v2's TWRP
-  `ro.boot.lk_build_desc`.
-- From v2's TWRP it clears boot0's 4 KiB header there, the way
-  `stock` does, reads it back as zeros, and runs `adb reboot`.
-  This saves the 11 s reboot into fastboot. From v2's fastboot it runs
-  `fastboot erase boot0` and `fastboot reboot`. Either way the Dot drops into
+  gains nothing. It reads `getvar`, and refuses a Dot whose `unlock_status` is
+  not `true`.
+- It runs `fastboot erase boot0` and `fastboot reboot`, and the Dot drops into
   its bootrom.
 - The script feeds main.py the newlines its prompts read, and is done when
   main.py logs `Reboot to unlocked fastboot`.

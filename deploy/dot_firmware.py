@@ -63,6 +63,16 @@ BOOT_ROOT_URL = (
 )
 BROM_PID = 0x0003
 BY_NAME = "/dev/block/platform/mtk-msdc.0/by-name"
+CHAIN_PARTS = (
+    "boot_a",
+    "boot_b",
+    "lk_a",
+    "lk_b",
+    "misc",
+    "recovery",
+    "tee1",
+    "tee2",
+)
 CHAIN_TEE = ("tee2", "tee1")
 CMDLINE_SIZE = 512
 DISK = "/dev/block/mmcblk0"
@@ -78,6 +88,7 @@ HANDSHAKE_WAIT = 10
 HEAD_CHECK = 1 << 20
 IMAGES = ("preloader", "lk", "tee", "boot", "system")
 LK_DESC = re.compile(r"[0-9a-f]{7}-\d{8}_\d{6}")
+MD5_DIGITS = 32
 MEDIATEK_VID = 0x0E8D
 MEGA = 1e6
 MINUTE = 60
@@ -117,6 +128,7 @@ SHORT_WAIT = 5
 SPINNER = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 STOCK_PARTITIONS = 16
 STOCK_STEPS = 16
+TABLE_FIELDS = 6
 TRANSFER_FIELDS = 2
 TWRP_VERSION = "3.7.0_9-bboe2"
 TWRP_VERSIONS = ("3.2.", "3.7.")
@@ -128,6 +140,10 @@ UPDATE_HOSTS = (
     "amzdigital-a.akamaihd.com",
 )
 USER_SERIAL = os.environ.get("ANDROID_SERIAL")
+V1_ALIGN = 0x400
+V1_APPEND = 0x6E000
+V1_BOOT_BLOCKS = 0x37000
+V1_PAYLOAD_SEEK = 223207
 V2_BUILD = "8146"
 VARINT_MORE = 0x80
 WAIT = 600
@@ -420,6 +436,13 @@ class Shell(enum.Enum):
         " $($d if=/dev/block/mmcblk0boot0 bs=4096 count=1 2>/dev/null"
         " | tr -d '\\0' | wc -c)\""
     )
+    BOOT0 = (
+        "d=dd; toybox dd --help >/dev/null 2>&1 && d='toybox dd'; "
+        "echo 0 > /sys/block/mmcblk0boot0/force_ro; "
+        "$d if={src} of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
+        "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
+        "echo 3 > /proc/sys/vm/drop_caches"
+    )
     DATA = f"""\
 set -e
 umount /sdcard /data 2>/dev/null || true
@@ -460,6 +483,15 @@ sync; umount $m
         'for m in $(grep "^/dev/block" /proc/mounts | cut -d" " -f2); do umount "$m";'
         ' done; echo "left:$(grep "^/dev/block" /proc/mounts | cut -d" " -f2'
         ' | tr "\\n" " ")"'
+    )
+    NODES = (
+        "b=; for p in {pairs}; do n=${{p%:*}}; s=${{p#*:}};"
+        ' g=$([ -b "$n" ] && blockdev --getsize64 "$n" || echo no);'
+        ' [ "$g" = "$s" ] || b="$b $n=$g"; done; echo "$b nodes-ok"'
+    )
+    SEEK_WRITE = (
+        "dd if={src} of={dst} bs=512 seek={seek} 2>/dev/null;"
+        " sync; echo 3 > /proc/sys/vm/drop_caches"
     )
     WRITE = (
         "dd if={src} of={dst} bs=1048576 2>/dev/null;"
@@ -592,6 +624,42 @@ def adb_shell(*, command: str, timeout: float = 300) -> str:
 
 def again() -> str:
     return f"Run {shlex.join(['dot_firmware.py', *sys.argv[1:]])} again."
+
+
+def amonet_chain() -> None:
+    part = partitions()
+    if "lk_a" not in part:
+        _die(message="the Dot's partition table has no lk_a. " + again())
+    node = f"{DISK}p{part['lk_a'][0]}"
+    for download in (AMONET_V2, AMONET_V1):
+        local = unpack(download) / "bin" / "lk.bin"
+        want = digest(kind="md5", path=local)
+        for attempt in range(PUSH_TRIES):
+            read = adb_shell(
+                command=f"[ -b {node} ] && dd if={node} bs={local.stat().st_size}"
+                " count=1 2>/dev/null | md5sum",
+                timeout=120,
+            )
+            held = read.split("\n")[-1].split(" ")[0]
+            if held == want:
+                return
+            if len(held) == MD5_DIGITS:
+                break
+            if attempt + 1 < PUSH_TRIES:
+                reconnect(DISK)
+        if len(held) != MD5_DIGITS:
+            _die(
+                message=f"{node} did not answer with an md5 of its first"
+                f" {local.stat().st_size} bytes: {held or 'nothing'}. Nothing"
+                " was written. " + again()
+            )
+    _die(
+        message="lk_a holds neither amonet v2.0.0's nor v1.1.0's LK, so this Dot"
+        " is locked and the recovery it started is one amonet left behind."
+        " Nothing was written. Unlock it first: unplug the USB cable, hold the"
+        " action button, plug it back in, and let go when the ring turns green. "
+        + again()
+    )
 
 
 def boot_image(*, fireos: pathlib.Path, magisk: pathlib.Path) -> bytes:
@@ -899,6 +967,42 @@ def cache_note() -> None:
         )
 
 
+def chain_nodes() -> tuple[dict[str, str], dict[str, tuple[int, int, int]]]:
+    part = partitions()
+    for name in (*CHAIN_PARTS, "boot_a_x", "boot_b_x"):
+        if name not in part:
+            _die(
+                message=f"the Dot's partition table has no {name}. Rebuild it"
+                f" with dot_firmware.py stock {V2_BUILD}, then root again."
+            )
+    for name in ("boot_a", "boot_b"):
+        held = part[name][2] - part[name][1] + 1
+        if held != V1_BOOT_BLOCKS:
+            _die(message=f"{name} holds {held} blocks, not {V1_BOOT_BLOCKS}")
+    node = {name: f"{DISK}p{part[name][0]}" for name in CHAIN_PARTS}
+    wrong = check_nodes(
+        want={node[name]: (part[name][2] - part[name][1] + 1) * 512 for name in node}
+    )
+    if wrong:
+        run(args=["adb", "reboot", "recovery"], check=False, timeout=60)
+        _die(
+            message="the kernel does not hold the table that is on the disk:"
+            f" {wrong}. A write by that name could land in RAM and verify"
+            " against itself, so the Dot is restarting into recovery. " + again()
+        )
+    if (
+        adb_shell(command="[ -b /dev/block/mmcblk0boot0 ] && echo block").split("\n")[
+            -1
+        ]
+        != "block"
+    ):
+        _die(
+            message="/dev/block/mmcblk0boot0 is not a block device, so the"
+            " preloader would be written to a file in RAM. " + again()
+        )
+    return node, part
+
+
 def chain_writes() -> tuple[Step, ...]:
     live = (
         "lk_b" if adb_shell(command="getprop ro.boot.slot_suffix") == "_b" else "lk_a"
@@ -950,6 +1054,28 @@ def check_adb() -> None:
             message=f"adb reports version {version}; this needs 1.0.36"
             " (platform-tools r24) or newer"
         )
+
+
+def check_nodes(*, want: dict[str, int]) -> str:
+    command = Shell.NODES.value.format(
+        pairs=" ".join(f"{node}:{size}" for node, size in want.items())
+    )
+    for attempt in range(PUSH_TRIES):
+        said = adb_shell(command=command, timeout=60).split("\n")[-1]
+        if said.endswith("nodes-ok"):
+            read = [token.partition("=") for token in said[: -len("nodes-ok")].split()]
+            if all(node in want for node, _, _ in read):
+                return ", ".join(
+                    f"{node} reads {got}, not {want[node]} bytes"
+                    for node, _, got in read
+                )
+        if attempt + 1 < PUSH_TRIES:
+            reconnect(DISK)
+    _die(
+        message="the Dot did not answer which of its partitions are block"
+        f" devices: {said!r}. " + again()
+    )
+    return ""
 
 
 def check_user() -> None:
@@ -1292,15 +1418,12 @@ def digest(*, kind: str, limit: int = 0, path: pathlib.Path) -> str:
     return h.hexdigest()
 
 
-def downgrade(*, from_twrp: bool) -> None:
+def downgrade() -> None:
     amonet = unpack(AMONET_V1)
     wheel = fetch(PYSERIAL)
-    if from_twrp:
-        lk = adb_shell(command="getprop ro.boot.lk_build_desc", timeout=30)
-    else:
-        if getvar("unlock_status").lower() != "true":
-            _die(message="not in amonet's fastboot")
-        lk = getvar("lk_build_desc")
+    if getvar("unlock_status").lower() != "true":
+        _die(message="not in amonet's fastboot")
+    lk = getvar("lk_build_desc")
     if not LK_DESC.fullmatch(lk):
         _die(
             message="the Dot did not report its bootloader version;"
@@ -1311,7 +1434,7 @@ def downgrade(*, from_twrp: bool) -> None:
     PROGRESS.begin(estimate="45 s", label="writing amonet v1.1.0's bootloader")
     bootrom(
         amonet=amonet,
-        erase=erase_from_twrp if from_twrp else erase_by_fastboot,
+        erase=erase_by_fastboot,
         payload=v2_payload(),
         wheel=wheel,
     )
@@ -1402,21 +1525,6 @@ def erase_by_fastboot() -> str:
         result = run(args=args, timeout=60)
         if result.returncode != 0:
             return f"{' '.join(args)} failed:\n{result.stdout}"
-    return ""
-
-
-def erase_from_twrp() -> str:
-    answer = (
-        adb_shell(command=Shell.CLEAR_BOOT0.value, timeout=60).split("\n")[-1].split()
-    )
-    if answer != ["4096", "0"]:
-        if answer[:1] == ["4096"]:
-            ERASED.unlink(missing_ok=True)
-        return (
-            "boot0's header did not read back as cleared, so the Dot was not"
-            " restarted. " + again()
-        )
-    run(args=["adb", "reboot"], timeout=60)
     return ""
 
 
@@ -1701,10 +1809,10 @@ def install_amonet_v2() -> None:
     PROGRESS.begin(estimate="40 s", label="waiting for v2.0.0 recovery to start")
 
 
-def install_fireos() -> None:
+def install_fireos(*, reboot: bool = True, slot: str = "") -> None:
     fireos = fetch(FIREOS)
     magisk = fetch(MAGISK)
-    slot = adb_shell(command="getprop ro.boot.slot_suffix", timeout=30)
+    slot = slot or adb_shell(command="getprop ro.boot.slot_suffix", timeout=30)
     if slot not in {"_a", "_b"}:
         _die(message=f"TWRP reports the boot slot {slot!r}, not _a or _b")
     boot, system = f"{BY_NAME}/boot{slot}_x", f"{BY_NAME}/system{slot}"
@@ -1745,11 +1853,13 @@ def install_fireos() -> None:
 
         PROGRESS.begin(estimate="5 s", label="installing Magisk 17.3")
         install_magisk(magisk=magisk, work=work)
-    PROGRESS.begin(estimate="4 min", label="waiting for rooted Fire OS 5 to boot")
-    run(args=["adb", "reboot"])
+    if reboot:
+        PROGRESS.begin(estimate="4 min", label="waiting for rooted Fire OS 5 to boot")
+        run(args=["adb", "reboot"])
 
 
 def install_fireos6() -> None:
+    amonet_chain()
     ota = download(V2_BUILD)
     zip_path = boot_root()
     if "boot_a_x" in partition_table():
@@ -1978,11 +2088,42 @@ def paint(*, code: ANSIColor, text: str) -> str:
     return f"\033[{code.value}m{text}\033[0m" if color(sys.stdout) else text
 
 
+def partition_field(*, name: str, number: int) -> str:
+    command = f"sgdisk --info={number} {DISK}; echo field-ok"
+    for attempt in range(PUSH_TRIES):
+        out = adb_shell(command=command, timeout=30)
+        if out.split("\n")[-1] == "field-ok":
+            for line in out.split("\n"):
+                if line.startswith(name + ":"):
+                    return line.split(":", 1)[1].strip().strip("'").split()[0]
+            _die(message=f"sgdisk --info={number} printed no {name}:\n{out}")
+        if attempt + 1 < PUSH_TRIES:
+            reconnect(DISK)
+    _die(message=f"sgdisk --info={number} did not answer in full. " + again())
+    return ""
+
+
 def partition_table() -> str:
-    table = adb_shell(command="sgdisk --print " + DISK, timeout=30)
-    if " userdata" not in table:
-        _die(message="sgdisk did not print the Dot's partition table:\n" + table)
-    return table
+    command = f"sgdisk --print {DISK}; echo table-ok"
+    for attempt in range(PUSH_TRIES):
+        said = adb_shell(command=command, timeout=30).split("\n")
+        if said[-1] == "table-ok" and any(" userdata" in line for line in said):
+            return "\n".join(said[:-1])
+        if attempt + 1 < PUSH_TRIES:
+            reconnect(DISK)
+    _die(message="sgdisk did not print the Dot's partition table:\n" + "\n".join(said))
+    return ""
+
+
+def partitions() -> dict[str, tuple[int, int, int]]:
+    found = {}
+    for line in partition_table().split("\n"):
+        field = line.split()
+        if len(field) >= TABLE_FIELDS and all(f.isdigit() for f in field[:3]):
+            found[field[-1]] = (int(field[0]), int(field[1]), int(field[2]))
+    if "userdata" not in found:
+        _die(message="no userdata in the Dot's partition table")
+    return found
 
 
 def passed(message: str) -> None:
@@ -2067,12 +2208,12 @@ def probe() -> State:  # ruff: ignore[complex-structure, too-many-return-stateme
         lk = adb_shell(command="getprop ro.boot.lk_build_desc", timeout=30)
         if not version[:1].isdigit() or not LK_DESC.fullmatch(lk):
             return State.STARTING
-        if lk != LK.V1.value:
-            if "boot_a_x" in adb_shell(command="sgdisk --print " + DISK, timeout=30):
-                return State.AMONET_V2_TWRP_V1_TABLE
-            return State.AMONET_V2_TWRP
         if "mtp" not in adb_shell(command="getprop sys.usb.config", timeout=30):
             return State.STARTING
+        if lk != LK.V1.value:
+            if "boot_a_x" in partition_table():
+                return State.AMONET_V2_TWRP_V1_TABLE
+            return State.AMONET_V2_TWRP
         if version != TWRP_VERSION:
             return State.AMONET_V1_TWRP
         return State.BBOE_V1_TWRP
@@ -2278,12 +2419,7 @@ def restore(
     staged = DOT_TMP / "pl.img"
     if run(args=["adb", "push", preloader, staged], timeout=120).returncode != 0:
         restore_failed("the preloader did not reach the Dot; do not reboot")
-    adb_shell(
-        command="echo 0 > /sys/block/mmcblk0boot0/force_ro; "
-        f"{SESSION.dd} if={staged} of=/dev/block/mmcblk0boot0 bs=1048576 2>/dev/null; "
-        "echo 1 > /sys/block/mmcblk0boot0/force_ro; sync; "
-        "echo 3 > /proc/sys/vm/drop_caches"
-    )
+    adb_shell(command=Shell.BOOT0.value.format(src=staged))
     wrong = md5_mismatch(
         command="md5sum /dev/block/mmcblk0boot0",
         want=digest(kind="md5", path=preloader),
@@ -2798,21 +2934,15 @@ def stages() -> dict[State, Stage]:
         table
         | {
             State.AMONET_V1_TWRP: Stage(replace_twrp, 1, State.BBOE_V1_TWRP),
-            State.AMONET_V2_TWRP: Stage(
-                lambda: downgrade(from_twrp=True), 2, State.BBOE_V1_TWRP, downgrades
-            ),
-            State.AMONET_V2_TWRP_V1_TABLE: Stage(
-                lambda: downgrade(from_twrp=True), 2, State.BBOE_V1_TWRP, downgrades
-            ),
+            State.AMONET_V2_TWRP: Stage(v1_append, 2, State.AMONET_V2_TWRP_V1_TABLE),
+            State.AMONET_V2_TWRP_V1_TABLE: Stage(v1_chain, 9, goal),
             State.BBOE_V1_TWRP: Stage(install_fireos, 5, State.ROOTED_BBOE),
             State.V2_BOOTED: Stage(
                 lambda: reboot_recovery("waiting for v2.0.0 recovery to start"),
                 1,
                 State.AMONET_V2_TWRP,
             ),
-            State.V2_FASTBOOT: Stage(
-                lambda: downgrade(from_twrp=False), 2, State.BBOE_V1_TWRP, downgrades
-            ),
+            State.V2_FASTBOOT: Stage(downgrade, 2, State.BBOE_V1_TWRP, downgrades),
         }
         | {rooted: Stage(swap_twrp, 1, goal) for rooted in ROOTED - {goal}}
     )
@@ -3034,6 +3164,107 @@ def usb_serial() -> str | None:
     return None
 
 
+def v1_append() -> None:
+    amonet_chain()
+    part = partitions()
+    if "boot_a_x" in part:
+        reboot_recovery("waiting for v2.0.0 recovery to start")
+        return
+    number, start, end = part["userdata"]
+    if number != max(held[0] for held in part.values()):
+        _die(message="userdata is not the last partition. " + again())
+    shrunk = ((end // V1_ALIGN) * V1_ALIGN) - V1_APPEND - 1
+    first, second = shrunk + 1, shrunk + 1 + V1_BOOT_BLOCKS
+    if shrunk <= start:
+        _die(message="userdata cannot give up room for amonet v1.1.0's boot images")
+    code = partition_field(name="Partition GUID code", number=number)
+    guid = partition_field(name="Partition unique GUID", number=number)
+    a, b = number + 1, number + 2
+    PROGRESS.begin(estimate="5 s", label="making room for amonet v1.1.0")
+    adb_shell(
+        command=f"sgdisk --set-alignment=1 --delete={number}"
+        f" --new={number}:{start}:{shrunk} --typecode={number}:{code}"
+        f" --partition-guid={number}:{guid} --change-name={number}:userdata"
+        f" --new={a}:{first}:{first + V1_BOOT_BLOCKS - 1} --typecode={a}:{code}"
+        f" --new={b}:{second}:{second + V1_BOOT_BLOCKS - 1} --typecode={b}:{code}"
+        f" --change-name={part['boot_a'][0]}:boot_a_x"
+        f" --change-name={part['boot_b'][0]}:boot_b_x"
+        f" --change-name={a}:boot_a --change-name={b}:boot_b {DISK}",
+        timeout=60,
+    )
+    left = partitions()
+    for name, want in (
+        ("userdata", (number, start, shrunk)),
+        ("boot_a", (a, first, first + V1_BOOT_BLOCKS - 1)),
+        ("boot_b", (b, second, second + V1_BOOT_BLOCKS - 1)),
+    ):
+        if left.get(name) != want:
+            _die(
+                message=f"sgdisk left {name} as {left.get(name)}, not {want}. "
+                + again()
+            )
+    for name in ("boot_a_x", "boot_b_x"):
+        if name not in left:
+            _die(message=f"sgdisk did not leave a {name}. " + again())
+    for field, holds in (
+        ("Partition GUID code", code),
+        ("Partition unique GUID", guid),
+    ):
+        if partition_field(name=field, number=number) != holds:
+            _die(message=f"sgdisk left userdata a different {field}. " + again())
+    reboot_recovery("waiting for v2.0.0 recovery to start")
+
+
+def v1_chain() -> None:
+    amonet_chain()
+    amonet = unpack(AMONET_V1)
+    twrp = amonet / "bin" / "twrp.img"
+    if ARGS.target == "v1-bboe":
+        twrp = fetch(TWRP)
+    node, part = chain_nodes()
+    with tempfile.TemporaryDirectory(dir=CACHE) as tmp:
+        work = pathlib.Path(tmp)
+        PROGRESS.begin(estimate="5 s", label="clear the preloader header (boot0)")
+        ERASED.touch()
+        answer = adb_shell(command=Shell.CLEAR_BOOT0.value).split("\n")[-1].split()
+        if answer != ["4096", "0"]:
+            read, *still_set = answer or [""]
+            if read == "4096" and still_set:
+                ERASED.unlink(missing_ok=True)
+            _die(message="boot0's header did not read back as cleared. " + again())
+        PROGRESS.begin(estimate="20 s", label="writing amonet v1.1.0's bootchain")
+        for name, source, seek in (
+            ("boot_a", "boot.hdr", 0),
+            ("boot_a", "boot.payload", V1_PAYLOAD_SEEK),
+            ("boot_b", "boot.hdr", 0),
+            ("boot_b", "boot.payload", V1_PAYLOAD_SEEK),
+            ("tee1", "tz.img", 0),
+            ("tee2", "tz.img", 0),
+            ("lk_a", "lk.bin", 0),
+            ("lk_b", "lk.bin", 0),
+        ):
+            write_checked(
+                local=amonet / "bin" / source,
+                node=node[name],
+                seek=seek,
+                work=work,
+            )
+        write_checked(local=twrp, node=node["recovery"], seek=0, work=work)
+        PROGRESS.begin(estimate="5 s", label="write misc, slot a marked good")
+        if adb_shell(command=Shell.FLUSH.value).split("\n")[-1] != "flushed":
+            _die(message="the Dot did not flush its caches. " + again())
+        block = bytearray(read_sectors(count=1, start=part["misc"][1] + 1))
+        block[BCB_OFFSET - 512 : BCB_OFFSET - 512 + len(BCB)] = BCB
+        staged = work / "misc.block"
+        staged.write_bytes(bytes(block))
+        write_checked(local=staged, node=node["misc"], seek=1, work=work)
+        install_fireos(reboot=False, slot="_a")
+        write_preloader(image=amonet / "bin" / "preloader.img")
+        ERASED.unlink(missing_ok=True)
+    run(args=["adb", "reboot"], check=True, timeout=60)
+    PROGRESS.begin(estimate="4 min", label="waiting for rooted Fire OS 5 to boot")
+
+
 def v1_recovery() -> None:
     amonet = unpack(AMONET_V1)
     twrp = fetch(TWRP)
@@ -3150,6 +3381,55 @@ def write(
     if wrong:
         restore_failed(f"{label} did not verify{wrong}; do not reboot")
     PROGRESS.end()
+
+
+def write_checked(
+    *, local: pathlib.Path, node: str, seek: int, work: pathlib.Path
+) -> None:
+    data = local.read_bytes()
+    padded = work / local.name
+    padded.write_bytes(data.ljust(-(-len(data) // 512) * 512, b"\0"))
+    remote = DOT_TMP / local.name
+    push_checked(local=padded, remote=remote)
+    adb_shell(
+        command=Shell.SEEK_WRITE.value.format(dst=node, seek=seek, src=remote),
+        timeout=600,
+    )
+    blocks = padded.stat().st_size // 512
+    want = digest(kind="md5", path=padded)
+    for attempt in range(PUSH_TRIES):
+        read = adb_shell(
+            command=f"[ -b {node} ] && dd if={node} bs=512 skip={seek}"
+            f" count={blocks} 2>/dev/null | md5sum",
+            timeout=600,
+        )
+        if read.split("\n")[-1].split(" ")[0] == want:
+            return
+        if attempt + 1 < PUSH_TRIES:
+            reconnect(DISK)
+    _die(message=f"{local.name} did not read back from {node}. " + again())
+
+
+def write_preloader(*, image: pathlib.Path) -> None:
+    PROGRESS.begin(estimate="5 s", label="write preloader to boot0")
+    staged = DOT_TMP / image.name
+    push_checked(local=image, remote=staged)
+    adb_shell(command=Shell.BOOT0.value.format(src=staged))
+    blocks = image.stat().st_size // 512
+    want = digest(kind="md5", path=image)
+    for attempt in range(PUSH_TRIES):
+        read = adb_shell(
+            command="d=dd; toybox dd --help >/dev/null 2>&1 && d='toybox dd';"
+            f" $d if=/dev/block/mmcblk0boot0 bs=512 count={blocks} 2>/dev/null | md5sum"
+        )
+        if read.split("\n")[-1].split(" ")[0] == want:
+            return
+        if attempt + 1 < PUSH_TRIES:
+            reconnect(DISK)
+    _die(
+        message="the preloader did not read back, so boot0 is still cleared"
+        " and the Dot restarts into its bootrom. " + again()
+    )
 
 
 def write_system(system: str) -> None:
