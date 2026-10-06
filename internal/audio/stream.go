@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -36,6 +37,9 @@ const (
 
 	observeEvery = 10
 	blindAfter   = 100
+
+	duckDownFor = 50 * time.Millisecond
+	duckUpFor   = 300 * time.Millisecond
 )
 
 var (
@@ -137,6 +141,9 @@ type Stream struct {
 	lastOut [ChimeChannels]int16
 	smooth  int64
 	easedAt int64
+
+	cut   float64
+	cutTo float64
 }
 
 func (s *Stream) report(format string, args ...any) {
@@ -283,7 +290,42 @@ func (s *Stream) read(block []int16) (int, bool) {
 	s.eased += int64(blended + trimmed)
 	s.index += int64(frames)
 	s.blocks++
+	s.scale(block)
 	return len(block), true
+}
+
+func duckCut(percent int) float64 {
+	return float64(100-min(max(percent, 0), 100)) / 100
+}
+
+func (s *Stream) duck(cut float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cutTo = min(max(cut, 0), 1)
+}
+
+func (s *Stream) scale(block []int16) {
+	if s.cut == 0 && s.cutTo == 0 {
+		return
+	}
+	down := 1 / float64(max(1, frameCount(s.rate, duckDownFor)))
+	up := 1 / float64(max(1, frameCount(s.rate, duckUpFor)))
+	for i := 0; i+ChimeChannels <= len(block); i += ChimeChannels {
+		switch {
+		case s.cut < s.cutTo:
+			s.cut = min(s.cut+down, s.cutTo)
+		case s.cut > s.cutTo:
+			s.cut = max(s.cut-up, s.cutTo)
+		}
+		gain := 1 - s.cut
+		for ch := range ChimeChannels {
+			block[i+ch] = attenuate(block[i+ch], gain)
+		}
+	}
+}
+
+func attenuate(v int16, gain float64) int16 {
+	return int16(min(max(math.Round(float64(v)*gain), math.MinInt16), math.MaxInt16))
 }
 
 func (s *Stream) fill(block []int16) (filled, blended, trimmed int) {

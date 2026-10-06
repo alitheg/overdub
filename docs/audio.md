@@ -398,6 +398,58 @@ one at a time, as there is one player.
   queue plays out; clearing it would need
   `SLAndroidSimpleBufferQueueItf::Clear`, which flushes the `AudioTrack`.
 
+## Ducking while Alexa holds focus
+
+- Alexa takes audio focus as `GAIN_TRANSIENT_MAY_DUCK` while she listens and
+  answers. Android 5.1 does not duck anything itself: a player has to hear the
+  focus change and lower its own level.
+- The player holds no focus, so it hears nothing. Holding focus would take a
+  resident Java process, about 25 MB on a Dot with about 110 MB free, and
+  `app_process` crashes on teardown (above).
+- The Sendspin volume is `STREAM_MUSIC`, which her speech plays on too, so the
+  duck cannot be a stream volume. It is a gain on the stream's own samples,
+  applied after placement, so timing and sync are untouched.
+- `system_server` logs every focus change, and `alexa.FocusWatcher` follows
+  `logcat -s MediaFocusControl`:
+
+```
+I/MediaFocusControl(  601):  AudioFocus  requestAudioFocus() from com.amazon.media.AmazonAudioManager@37705de9amazon.speech.util.AudioFocusHelper$2@22ab2a6e req=3flags=0x0
+I/MediaFocusControl(  601):  AudioFocus  abandonAudioFocus() from com.amazon.media.AmazonAudioManager@37705de9amazon.speech.util.AudioFocusHelper$2@22ab2a6e
+I/MediaFocusControl(  601): AudioFocus  removeFocusStackEntry(): removing entry for com.amazon.media.AmazonAudioManager@37705de9amazon.speech.util.AudioFocusHelper$2@22ab2a6e
+```
+
+- Her requests overlap. One "what time is it" took focus from 3 clients in
+  turn, each requesting before the last abandoned, over 10.3 seconds. So the
+  watcher keeps a set of holders, not a flag, and the stream stays ducked until
+  the set is empty.
+- `removeFocusStackEntry` logs whenever an entry leaves from below the top of
+  the stack: after an abandon, and also after a re-request, which moves the
+  client to the top. So a removal releases its client unless it comes straight
+  after that client's own request.
+- A client that dies holding focus is logged by its binder
+  (`android.os.BinderProxy@...`), which names no holder. Only the 15-minute
+  expiry releases it.
+
+| `req=` | request | stream level |
+|---|---|---|
+| 3 | `GAIN_TRANSIENT_MAY_DUCK` | 20% |
+| 2, 4 | `GAIN_TRANSIENT`, `GAIN_TRANSIENT_EXCLUSIVE` | 10% |
+| 1 | `GAIN` | 100%: a permanent taker plays beside the stream, as before |
+
+- The deepest holder wins. The levels match sendspinlite's on an Echo Show.
+- Nothing handles a permanent taker. If Alexa plays music herself, both streams
+  play at full level, as they did before. A gain cannot fix that: the stream
+  would need a pause the Sendspin layer can resume.
+- Her speech does duck over her own music, because the deepest holder wins. No
+  test covers a `req=1` and a `req=3` holder together, which is that pair.
+- The gain moves linearly, a full swing taking 50 ms down and 300 ms up: 100%
+  to 20% in 40 ms, and back in 240 ms. No click on either edge.
+- At full gain the samples are not touched, so an unducked stream is
+  bit-identical to before.
+- A stream opened while a holder is held starts at the ducked level.
+- It fails toward full level: each holder expires 15 minutes after its
+  request, and when logcat exits the set is cleared before the retry.
+
 ## Testing audio here
 
 - **Never test with a sustained pure tone.** A 20-second 440 Hz sine pulses

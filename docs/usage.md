@@ -245,6 +245,8 @@ Sendspin identity.
 - Setting it from Home Assistant sets the level of the route in
   `output_device` exactly. It is silent: no key press, so no tick.
 - Music Assistant can set it over Sendspin too.
+- Sendspin ducks to 20% while Alexa listens and answers, and comes back when
+  she is done. docs/audio.md has how.
 - Android keeps a level per route: `volume` for the speaker, `jack_volume` for
   the socket, `bluetooth_volume` for a paired speaker. All 3 are reported
   whatever is connected.

@@ -27,6 +27,7 @@ type Chime struct {
 	stop   chan struct{}
 	done   chan struct{}
 	closed bool
+	cut    float64
 }
 
 func NewChime() (*Chime, error) {
@@ -84,7 +85,7 @@ func (c *Chime) OpenStream(rate int, say func(string, ...any)) (*Stream, error) 
 		held.Close()
 		c.stream.CompareAndSwap(held, nil)
 	}
-	s := &Stream{rate: rate, say: say}
+	s := &Stream{rate: rate, say: say, cut: c.cut, cutTo: c.cut}
 	s.closer = func() { c.stream.CompareAndSwap(s, nil) }
 	if !c.stream.CompareAndSwap(nil, s) {
 		return nil, errors.New("audio: a stream is already open, and this player holds one")
@@ -95,6 +96,16 @@ func (c *Chime) OpenStream(rate int, say func(string, ...any)) (*Stream, error) 
 		c.mix.wake()
 	}
 	return s, nil
+}
+
+func (c *Chime) Duck(percent int) {
+	cut := duckCut(percent)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cut = cut
+	if s := c.stream.Load(); s != nil {
+		s.duck(cut)
+	}
 }
 
 func (c *Chime) retune() bool {

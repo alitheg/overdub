@@ -1,10 +1,7 @@
 package alexa
 
 import (
-	"bufio"
 	"io"
-	"log"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -64,18 +61,7 @@ func (w *PlaybackWatcher) Cancel() {
 
 func (w *PlaybackWatcher) Run() {
 	go w.sweep()
-	said := false
-	for {
-		start := time.Now()
-		err := w.tail()
-		var say bool
-		say, said = shouldSay(said, time.Since(start), err)
-		if say {
-			log.Printf("playback watcher: %v; retrying every %v, and saying so once",
-				err, watchRetry)
-		}
-		time.Sleep(watchRetry)
-	}
+	keepFollowing("playback watcher", watchArgv, w.line, nil)
 }
 
 func shouldSay(said bool, ranFor time.Duration, err error) (say, nowSaid bool) {
@@ -109,29 +95,8 @@ func (w *PlaybackWatcher) expire() {
 	}
 }
 
-func (w *PlaybackWatcher) tail() error {
-	cmd := exec.Command(watchArgv[0], watchArgv[1:]...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-
-	return w.read(stdout)
-}
-
 func (w *PlaybackWatcher) read(r io.Reader) error {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		w.line(sc.Text())
-	}
-	return sc.Err()
+	return readLines(r, w.line)
 }
 
 func (w *PlaybackWatcher) line(line string) {

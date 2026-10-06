@@ -115,6 +115,7 @@ func serve(flags config) error {
 	var player sendspin.Player
 	if chime != nil {
 		player = chimePlayer{chime: chime}
+		go (&alexa.FocusWatcher{OnLevel: chime.Duck}).Run()
 	}
 
 	go serveAPI(flags.Name, psk, i, player)

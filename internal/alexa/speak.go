@@ -1,6 +1,7 @@
 // Package alexa hands a clip to Alexa's own synthesizer, which is the only way
 // to play one this daemon does not decode itself. docs/audio.md has the
-// measurements and says what the route costs.
+// measurements and says what the route costs. It also follows audio focus in
+// logcat, so the stream can duck while Alexa holds it.
 package alexa
 
 import (

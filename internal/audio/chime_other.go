@@ -18,4 +18,6 @@ func (c *Chime) OpenStream(int, func(string, ...any)) (*Stream, error) {
 	return nil, errors.New("audio: built without OpenSL ES")
 }
 
+func (c *Chime) Duck(int) {}
+
 func (c *Chime) Close() {}

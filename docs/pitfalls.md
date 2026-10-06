@@ -72,6 +72,15 @@ covering whatever you are about to touch.
   "connection refused". `internal/alexa` reads `net.dns1` and `net.dns2` and
   builds its own resolver.
 
+## logcat followers
+
+- `internal/alexa` follows logcat in a child process for each watcher. A
+  restart kills the daemon before its deferred `Kill` runs, so each child used
+  to be left running under init: two more `logcat` processes per restart, for
+  the rest of the boot.
+- Each child is started with `Pdeathsig: SIGKILL`, so the kernel kills it when
+  the daemon goes. A daemon killed with `kill` left no `logcat` behind.
+
 ## The firewall
 
 - FireOS runs iptables with `INPUT policy DROP` and a port allowlist without
